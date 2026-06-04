@@ -1,4 +1,4 @@
-name: Build Windows 10/11 EXE
+name: Build Windows 10/11 EXE (No Console)
 
 on:
   push:
@@ -23,9 +23,9 @@ jobs:
         pip install pyinstaller
         pip install pandas matplotlib openpyxl
 
-    - name: Build EXE with PyInstaller
+    - name: Build EXE with PyInstaller (Hide Console)
       run: |
-        pyinstaller --onefile ozonanalytics.py
+        pyinstaller --onefile --noconsole ozonanalytics.py
 
     - name: Upload Artifact (Save EXE)
       uses: actions/upload-artifact@v4
