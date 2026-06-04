@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows 7 Compatible EXE
 
 on:
   push:
@@ -6,21 +6,21 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2019 # Используем чуть более старый образ сервера для лучшей совместимости
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Set up Python 3.8
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: '3.8.10' # Строго эта версия для Windows 7
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller
+        pip install "pyinstaller<6.0" # Старые версии PyInstaller стабильнее работают с Python 3.8
 
     - name: Build EXE with PyInstaller
       run: |
@@ -29,5 +29,5 @@ jobs:
     - name: Upload Artifact (Save EXE)
       uses: actions/upload-artifact@v4
       with:
-        name: ozonanalytics-windows-exe
+        name: ozonanalytics-win7-exe
         path: dist/ozonanalytics.exe
