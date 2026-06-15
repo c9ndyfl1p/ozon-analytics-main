@@ -21,7 +21,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install pandas matplotlib openpyxl
+        pip install pandas matplotlib openpyxl pillow
 
     - name: Build EXE with PyInstaller (Hide Console)
       run: |
