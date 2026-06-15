@@ -5,6 +5,7 @@
 """
 
 import json
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
@@ -22,7 +23,8 @@ class OzonMassCalcWidget(tk.Frame):
     COLOR_RED   = "#F87171"
     COLOR_BLUE  = "#3B82F6"
 
-    STATE_FILE    = Path(__file__).with_name("ozon_state.json")
+    STATE_FILE    = (Path(sys.executable).parent if getattr(sys, 'frozen', False)
+                     else Path(__file__).parent) / "ozon_state.json"
 
     TARIFF_PER_L  = 1.9    # руб. за литр
     ACQUIRING_PCT = 1.5    # %

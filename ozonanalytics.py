@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -24,7 +25,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 # НАСТРОЙКА ДИНАМИЧЕСКИХ ПУТЕЙ
 # ══════════════════════════════════════════════════════════════════════════════
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 COSTS_FILE   = BASE_DIR / "costs_db.json"
 RETURNS_FILE = BASE_DIR / "returns_settings.json"
 
