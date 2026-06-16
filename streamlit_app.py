@@ -13,12 +13,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # ── Пути к файлам ─────────────────────────────────────────────────────────
-BASE_DIR     = Path(__file__).parent
-COSTS_FILE   = BASE_DIR / "costs_db.json"
-RETURNS_FILE = BASE_DIR / "returns_settings.json"
-STATE_FILE   = BASE_DIR / "ozon_state.json"
-HISTORY_FILE = BASE_DIR / "history.json"
-HISTORY_DIR  = BASE_DIR / "history"
+BASE_DIR        = Path(__file__).parent
+COSTS_FILE      = BASE_DIR / "costs_db.json"
+COST_NAMES_FILE = BASE_DIR / "cost_names.json"
+RETURNS_FILE    = BASE_DIR / "returns_settings.json"
+STATE_FILE      = BASE_DIR / "ozon_state.json"
+HISTORY_FILE    = BASE_DIR / "history.json"
+HISTORY_DIR     = BASE_DIR / "history"
 
 # ── Константы ─────────────────────────────────────────────────────────────
 TARIFF_PER_L  = 1.9
@@ -245,6 +246,7 @@ def _shared() -> dict:
     HISTORY_DIR.mkdir(exist_ok=True)
     return {
         "costs":           _read_json(COSTS_FILE, {}),
+        "cost_names":      _read_json(COST_NAMES_FILE, {}),
         "return_settings": _read_json(RETURNS_FILE, {}),
         "history":         _read_json(HISTORY_FILE, {"ozon": [], "ym": []}),
     }
@@ -256,6 +258,13 @@ def get_costs() -> dict:
 def set_costs(costs: dict):
     _shared()["costs"] = costs
     _write_json(COSTS_FILE, costs)
+
+def get_cost_names() -> dict:
+    return _shared()["cost_names"]
+
+def set_cost_names(names: dict):
+    _shared()["cost_names"] = names
+    _write_json(COST_NAMES_FILE, names)
 
 def get_return_settings() -> dict:
     return _shared()["return_settings"]
@@ -1057,17 +1066,64 @@ def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление
         mask = grp.apply(lambda r: search.lower() in str(r.values).lower(), axis=1)
         grp  = grp[mask]
 
-    st.dataframe(
-        grp.style.format({
-            "Выручка": "{:,.2f}", "Расходы": "{:,.2f}", "Поступление": "{:,.2f}",
-            "Себестоимость": "{:,.2f}", "Прибыль": "{:,.2f}", "Рент., %": "{:.1f}%",
-        }).map(
+    # ── Строка итогов ──────────────────────────────────────────────────────
+    net_tot  = grp["Поступление"].sum()
+    cost_tot = grp["Себестоимость"].sum()
+    totals = pd.DataFrame([{
+        "SKU": "— ИТОГО —", "Название товара": "",
+        "Кол-во":       grp["Кол-во"].sum(),
+        "Выручка":      grp["Выручка"].sum(),
+        "Расходы":      grp["Расходы"].sum(),
+        "Поступление":  net_tot,
+        "Себестоимость": cost_tot,
+        "Прибыль":      grp["Прибыль"].sum(),
+        "Рент., %":     round(net_tot / cost_tot * 100 - 100, 1) if cost_tot > 0 else 0.0,
+    }])
+    grp_display = pd.concat([grp, totals], ignore_index=True)
+
+    fmt = {
+        "Выручка": "{:,.2f}", "Расходы": "{:,.2f}", "Поступление": "{:,.2f}",
+        "Себестоимость": "{:,.2f}", "Прибыль": "{:,.2f}", "Рент., %": "{:.1f}%",
+    }
+
+    st.caption("Кликните на строку, чтобы увидеть все операции по SKU")
+    event = st.dataframe(
+        grp_display.style.format(fmt).map(
             lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0
                       else "color: #22C55E" if isinstance(v, (int, float)) and v > 0 else "",
             subset=["Прибыль", "Рент., %"]
         ),
         use_container_width=True, hide_index=True,
+        on_select="rerun", selection_mode="single-row",
+        key=f"{key_prefix}tbl_{source_col}",
     )
+
+    # ── Раскрываемые детали по выбранной строке ───────────────────────────
+    rows = event.selection.rows if hasattr(event, "selection") else []
+    if rows:
+        idx = rows[0]
+        if idx < len(grp):   # не строка итогов
+            sel_sku  = grp.iloc[idx]["SKU"]
+            sel_name = grp.iloc[idx]["Название товара"]
+            ops = df[df["SKU"] == sel_sku].copy()
+            detail_cols = [c for c in
+                           ["ID начисления", "Номер заказа", "Дата начисления",
+                            "Тип начисления", "Количество", "Выручка", "Расходы",
+                            source_col, "Прибыль"]
+                           if c in ops.columns]
+            if "Дата начисления" in ops.columns:
+                ops = ops.sort_values("Дата начисления")
+            with st.expander(f"📋 Операции: {sel_name}  ·  SKU {sel_sku}  ·  {len(ops)} шт.", expanded=True):
+                st.dataframe(
+                    ops[detail_cols].style.format(
+                        {c: "{:,.2f}" for c in ["Выручка", "Расходы", source_col, "Прибыль"] if c in detail_cols}
+                    ).map(
+                        lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0
+                                  else "color: #22C55E" if isinstance(v, (int, float)) and v > 0 else "",
+                        subset=[c for c in ["Прибыль"] if c in detail_cols]
+                    ),
+                    use_container_width=True, hide_index=True,
+                )
 
     st.download_button("📥 Скачать Excel", df_to_excel(grp, "Аналитика"),
                        "analytics.xlsx",
@@ -1472,15 +1528,39 @@ def page_costs():
                     st.warning("SKU не найден")
 
     with col_table:
-        costs = get_costs()
+        costs      = get_costs()
+        cost_names = get_cost_names()
         st.subheader(f"Текущая база ({len(costs)} записей)")
         if costs:
-            df_costs = pd.DataFrame(list(costs.items()), columns=["Артикул / SKU", "Себестоимость, руб."])
-            df_costs = df_costs.sort_values("Артикул / SKU").reset_index(drop=True)
+            rows_c = [{"Артикул / SKU": sku,
+                       "Название":       cost_names.get(sku, ""),
+                       "Себестоимость, руб.": float(v)}
+                      for sku, v in sorted(costs.items())]
+            df_costs = pd.DataFrame(rows_c)
             search_c = st.text_input("🔍 Поиск по SKU")
             if search_c:
                 df_costs = df_costs[df_costs["Артикул / SKU"].str.contains(search_c, case=False, na=False)]
-            st.dataframe(df_costs, use_container_width=True, hide_index=True, height=500)
+            st.caption("Колонка «Название» — редактируемая. После правки нажмите «Сохранить названия».")
+            edited_c = st.data_editor(
+                df_costs,
+                column_config={
+                    "Артикул / SKU":       st.column_config.TextColumn(disabled=True),
+                    "Название":            st.column_config.TextColumn(width="large"),
+                    "Себестоимость, руб.": st.column_config.NumberColumn(format="%.2f", disabled=True),
+                },
+                hide_index=True, use_container_width=True, height=500,
+                key="costs_editor",
+            )
+            if st.button("💾 Сохранить названия", type="primary"):
+                new_names = dict(cost_names)
+                for _, row in edited_c.iterrows():
+                    sku_v = str(row["Артикул / SKU"]).strip()
+                    name_v = str(row["Название"]).strip()
+                    if sku_v:
+                        new_names[sku_v] = name_v
+                set_cost_names(new_names)
+                st.success("✓ Названия сохранены")
+                st.rerun()
         else:
             st.info("База пуста. Добавьте записи через форму или импортируйте из файла.")
 
@@ -1616,6 +1696,50 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
+
+with st.sidebar.expander("📖 Гайд по приложению"):
+    st.markdown("""
+**📊 OZON Аналитика**
+Загрузите: *Финансы → Экономика магазина → Скачать отчёт по начислениям*
+- **Начисления** — сводка по SKU с итогами. Кликните строку → раскроются все операции по SKU
+- **Возвраты** — смените тип возврата (бой / восстановление / к продаже) → пересчёт прибыли
+- **Графики** — 4 чарта. Кнопка **⤢** разворачивает один на всю ширину, **⤡** — сворачивает
+- **Сравнение** — выберите несколько отчётов из истории и метрику; линии наложатся по дням периода
+- **Рекомендации** — товары с высокой маржой и слабыми продажами (кандидаты для промо)
+
+---
+**🎯 Яндекс Маркет**
+Загрузите: *Финансы → Финансовые отчёты → О платежах за период*
+Логика разделов — аналогична OZON.
+
+---
+**💰 Себестоимость**
+Общая база для всех пользователей, изменения видны сразу.
+- Добавляйте SKU вручную или **импортируйте Excel** (колонки: SKU, Себестоимость)
+- В таблице справа отредактируйте **Название** SKU и нажмите «Сохранить названия»
+- Себестоимость учитывается во всех расчётах прибыли и рентабельности
+
+---
+**🛒 Калькулятор цен · Дальний кластер**
+Рассчитывает рекомендуемую цену так, чтобы после всех расходов вышла нужная рентабельность.
+
+*Что учитывает формула:*
+| Статья | Как задаётся |
+|---|---|
+| Себестоимость | колонка «Себестоимость» |
+| Вознаграждение МП | % от цены (колонка «Возн. МП, %») |
+| Эквайринг | 1.5% от цены (фиксировано) |
+| Логистика до СЦ | колонка «Логист. Дальн» |
+| Объёмный вес | 1.9 ₽/л × объём |
+| СЦ + ПВЗ + Возврат | колонки «СЦ», «ПВЗ», «Возврат» |
+
+*Как использовать:*
+1. Установите **Желаемую рентабельность** (%) — цены пересчитаются автоматически
+2. Введите **себестоимость** для каждого товара в колонке «Себестоимость»
+3. Скорректируйте вознаграждение МП и логистику если нужно
+4. Скачайте результат в Excel кнопкой «📥 Скачать Excel»
+5. Используйте «📋 Шаблон себестоимости» для загрузки в базу через раздел Себестоимость
+""")
 
 # ── Страницы ──────────────────────────────────────────────────────────────
 if page == "📊 OZON Аналитика":
