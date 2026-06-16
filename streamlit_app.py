@@ -103,7 +103,8 @@ def _parse_date_from_str(s: str) -> datetime | None:
 
 def period_from_filename(filename: str) -> str:
     """Извлекает период из имени файла. Возвращает пустую строку если не найдено."""
-    tokens = re.findall(r"\d{2}[._-]\d{2}[._-]\d{4}|\d{4}[._-]\d{2}[._-]\d{2}", filename)
+    # Год ограничен 19xx/20xx чтобы не ловить случайные числа типа 8206235
+    tokens = re.findall(r"\d{2}[._-]\d{2}[._-](?:19|20)\d{2}|(?:19|20)\d{2}[._-]\d{2}[._-]\d{2}", filename)
     parsed = [d for t in tokens if (d := _parse_date_from_str(t)) is not None]
     if len(parsed) >= 2:
         parsed.sort()
