@@ -346,7 +346,14 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
                             opacity=0.7),
                 showlegend=False,
             ), row=2, col=2)
-            fig.add_hline(y=0, line_dash="dot", line_color=C_MUTED, row=2, col=2)
+            # horizontal zero line — add_hline не работает в mixed-type subplots
+            x_min = grp["qty"].min() * 0.9
+            x_max = grp["qty"].max() * 1.1
+            fig.add_trace(go.Scatter(
+                x=[x_min, x_max], y=[0, 0],
+                mode="lines", line=dict(color=C_MUTED, dash="dot", width=1),
+                showlegend=False,
+            ), row=2, col=2)
 
     fig.update_layout(
         paper_bgcolor=C_BG, plot_bgcolor=C_CARD,
