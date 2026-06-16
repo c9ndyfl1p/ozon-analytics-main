@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
 # ── Пути к файлам ─────────────────────────────────────────────────────────
@@ -582,41 +581,47 @@ def compute_insights(df: pd.DataFrame):
 # ГРАФИКИ
 # ══════════════════════════════════════════════════════════════════════════
 
-def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль",
-                          theme: dict | None = None) -> go.Figure:
-    t = theme or get_theme()
-    fig = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=["Топ товаров", "Динамика выручки и прибыли",
-                        "Доля в прибыли (топ-5)", "Матрица ассортимента"],
-        specs=[[{"type": "bar"}, {"type": "xy"}],
-               [{"type": "pie"}, {"type": "scatter"}]],
-        horizontal_spacing=0.12, vertical_spacing=0.22,
+def _base_layout(fig: go.Figure, t: dict, title: str, height: int):
+    fig.update_layout(
+        title=dict(text=title, font=dict(color=t["muted"], size=12)),
+        paper_bgcolor=t["bg"], plot_bgcolor=t["card"],
+        font=dict(color=t["text"], size=11), height=height,
+        margin=dict(l=10, r=10, t=38, b=10),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=t["text"])),
     )
+    fig.update_xaxes(gridcolor=t["border"], zerolinecolor=t["border"])
+    fig.update_yaxes(gridcolor=t["border"], zerolinecolor=t["border"])
 
-    # 1. Топ товаров
+def _chart_top(df: pd.DataFrame, top_metric: str, t: dict, h: int) -> go.Figure:
     mcol = {"Прибыль": "Прибыль", "Выручка": "Выручка", "Продано": "Количество"}.get(top_metric, "Прибыль")
+    fig = go.Figure()
     if "Название товара" in df.columns and mcol in df.columns:
         top = df.groupby("Название товара")[mcol].sum().sort_values().tail(10)
-        colors = [t["danger"] if v < 0 else t["primary"] for v in top.values]
         fig.add_trace(go.Bar(
             y=top.index.tolist(), x=top.values.tolist(), orientation="h",
-            marker_color=colors, showlegend=False,
+            marker_color=[t["danger"] if v < 0 else t["primary"] for v in top.values],
+            showlegend=False,
             text=[f"{v:,.0f}" for v in top.values], textposition="outside",
-        ), row=1, col=1)
+        ))
+    _base_layout(fig, t, "Топ товаров", h)
+    return fig
 
-    # 2. Динамика
+def _chart_dynamics(df: pd.DataFrame, t: dict, h: int) -> go.Figure:
+    fig = go.Figure()
     if "Дата начисления" in df.columns and "Выручка" in df.columns:
         by_d = (df.groupby("Дата начисления")[["Выручка", "Прибыль"]]
                 .sum().reset_index().sort_values("Дата начисления"))
         dates = by_d["Дата начисления"].astype(str).tolist()
         fig.add_trace(go.Bar(x=dates, y=by_d["Выручка"].tolist(),
-                             name="Выручка", marker_color=t["success"], opacity=0.65), row=1, col=2)
+                             name="Выручка", marker_color=t["success"], opacity=0.65))
         fig.add_trace(go.Scatter(x=dates, y=by_d["Прибыль"].tolist(),
                                  name="Прибыль", line=dict(color=t["warning"], width=2),
-                                 mode="lines+markers"), row=1, col=2)
+                                 mode="lines+markers"))
+    _base_layout(fig, t, "Динамика выручки и прибыли", h)
+    return fig
 
-    # 3. Пирог
+def _chart_pie(df: pd.DataFrame, t: dict, h: int) -> go.Figure:
+    fig = go.Figure()
     if "Название товара" in df.columns and "Прибыль" in df.columns:
         bp = df.groupby("Название товара")["Прибыль"].sum()
         bp = bp[bp > 0].sort_values(ascending=False)
@@ -629,9 +634,12 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль",
             fig.add_trace(go.Pie(
                 labels=top5.index.tolist(), values=top5.values.tolist(),
                 hole=0.55, marker_colors=palette[:len(top5)], showlegend=True,
-            ), row=2, col=1)
+            ))
+    _base_layout(fig, t, "Доля в прибыли (топ-5)", h)
+    return fig
 
-    # 4. Матрица
+def _chart_matrix(df: pd.DataFrame, t: dict, h: int) -> go.Figure:
+    fig = go.Figure()
     if {"Название товара", "Количество", "Рентабельность", "Выручка"}.issubset(df.columns):
         grp = df.groupby("Название товара").agg(
             qty=("Количество", "sum"), margin=("Рентабельность", "mean"),
@@ -641,58 +649,65 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль",
         if not grp.empty:
             rev_max = grp["revenue"].max() or 1.0
             sizes   = (grp["revenue"] / rev_max * 40 + 6).clip(6, 46)
-
-            # Подписываем только выбросы — топ-3 по марже и топ-3 по продажам
-            label_idx = (set(grp.nlargest(3, "margin").index) |
-                         set(grp.nlargest(3, "qty").index))
-
-            def _short(name: str) -> str:
-                return name[:20] + "…" if len(name) > 20 else name
-
-            labels = [_short(str(row["Название товара"])) if i in label_idx else ""
-                      for i, row in grp.iterrows()]
+            label_idx = (set(grp.nlargest(3, "margin").index) | set(grp.nlargest(3, "qty").index))
+            def _short(n: str) -> str: return n[:20] + "…" if len(n) > 20 else n
+            labels = [_short(str(r["Название товара"])) if i in label_idx else "" for i, r in grp.iterrows()]
             hovers = [
-                f"<b>{row['Название товара']}</b><br>"
-                f"Продано: {int(row['qty'])} шт.<br>"
-                f"Рентабельность: {row['margin']:.1f}%<br>"
-                f"Выручка: {row['revenue']:,.0f} ₽"
-                for _, row in grp.iterrows()
+                f"<b>{r['Название товара']}</b><br>Продано: {int(r['qty'])} шт.<br>"
+                f"Рентабельность: {r['margin']:.1f}%<br>Выручка: {r['revenue']:,.0f} ₽"
+                for _, r in grp.iterrows()
             ]
-
             fig.add_trace(go.Scatter(
                 x=grp["qty"].tolist(), y=grp["margin"].tolist(),
-                mode="markers+text",
-                text=labels,
-                hovertext=hovers,
-                hoverinfo="text",
-                textposition="top center",
-                textfont=dict(size=9, color=t["text"]),
-                marker=dict(
-                    size=sizes.tolist(),
-                    color=[t["danger"] if m < 0 else t["primary"] for m in grp["margin"]],
-                    opacity=0.8,
-                    line=dict(color="rgba(128,128,128,0.3)", width=1),
-                ),
+                mode="markers+text", text=labels, hovertext=hovers, hoverinfo="text",
+                textposition="top center", textfont=dict(size=9, color=t["text"]),
+                marker=dict(size=sizes.tolist(),
+                            color=[t["danger"] if m < 0 else t["primary"] for m in grp["margin"]],
+                            opacity=0.8, line=dict(color="rgba(128,128,128,0.3)", width=1)),
                 showlegend=False,
-            ), row=2, col=2)
-            x_min = grp["qty"].min() * 0.9
-            x_max = grp["qty"].max() * 1.1
+            ))
+            x_min, x_max = grp["qty"].min() * 0.9, grp["qty"].max() * 1.1
             fig.add_trace(go.Scatter(
                 x=[x_min, x_max], y=[0, 0],
-                mode="lines", line=dict(color=t["muted"], dash="dot", width=1),
-                showlegend=False,
-            ), row=2, col=2)
-
-    fig.update_layout(
-        paper_bgcolor=t["bg"], plot_bgcolor=t["card"],
-        font=dict(color=t["text"], size=11), height=680,
-        margin=dict(l=10, r=10, t=60, b=10),
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=t["text"])),
-    )
-    for ann in fig.layout.annotations:
-        ann.font.color = t["muted"]
-        ann.font.size  = 12
+                mode="lines", line=dict(color=t["muted"], dash="dot", width=1), showlegend=False,
+            ))
+    _base_layout(fig, t, "Матрица ассортимента", h)
+    fig.update_layout(xaxis_title="Продано, шт.", yaxis_title="Рентабельность, %")
     return fig
+
+def render_charts_section(df: pd.DataFrame, key_prefix: str, top_metric: str):
+    """2×2 сетка графиков. Клик на ⤢ — разворачивает один на всю ширину, повторный — сворачивает."""
+    t   = get_theme()
+    exp = st.session_state.get(f"{key_prefix}exp")
+
+    fns = {
+        "top":      lambda h: _chart_top(df, top_metric, t, h),
+        "dynamics": lambda h: _chart_dynamics(df, t, h),
+        "pie":      lambda h: _chart_pie(df, t, h),
+        "matrix":   lambda h: _chart_matrix(df, t, h),
+    }
+
+    def _tile(name: str, h: int):
+        fig = fns[name](h)
+        bcol, gcol = st.columns([1, 22])
+        with bcol:
+            st.write("")
+            icon = "⤡" if exp == name else "⤢"
+            if st.button(icon, key=f"{key_prefix}exp_{name}", help="Развернуть / свернуть"):
+                st.session_state[f"{key_prefix}exp"] = None if exp == name else name
+                st.rerun()
+        with gcol:
+            st.plotly_chart(fig, use_container_width=True, config=_PLOTLY_CFG)
+
+    if exp and exp in fns:
+        _tile(exp, 700)
+    else:
+        c1, c2 = st.columns(2)
+        with c1: _tile("top",      340)
+        with c2: _tile("dynamics", 340)
+        c3, c4 = st.columns(2)
+        with c3: _tile("pie",      340)
+        with c4: _tile("matrix",   340)
 
 # ── Полноэкранный график ───────────────────────────────────────────────────
 
@@ -1276,7 +1291,7 @@ def page_ozon():
 
     with tab3:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"], horizontal=True)
-        show_chart(make_analytics_charts(regular, metric, get_theme()), "ozon_main")
+        render_charts_section(regular, "ozon_", metric)
 
     with tab4:
         render_comparison_tab("ozon", period, regular, "ozon_")
@@ -1373,7 +1388,7 @@ def page_ym():
     with tab2:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"],
                           horizontal=True, key="ym_metric")
-        show_chart(make_analytics_charts(df, metric, get_theme()), "ym_main")
+        render_charts_section(df, "ym_", metric)
 
     with tab3:
         render_comparison_tab("ym", period, df, "ym_")
