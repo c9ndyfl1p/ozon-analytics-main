@@ -314,6 +314,53 @@ def _ensure_admin():
         }
         set_users(users)
 
+# ── GitHub autosave ───────────────────────────────────────────────────────
+
+GITHUB_REPO      = "c9ndyfl1p/ozon-analytics-main"
+_DATA_FILES      = ["costs_db.json", "cost_names.json", "users.json", "history.json"]
+
+def _github_commit_files():
+    try:
+        import base64
+        import requests as _req
+        token = st.secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            return
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+        base_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents"
+        changed = []
+        for fname in _DATA_FILES:
+            fpath = BASE_DIR / fname
+            if not fpath.exists():
+                continue
+            content_b64 = base64.b64encode(fpath.read_bytes()).decode()
+            resp = _req.get(f"{base_url}/{fname}", headers=headers, timeout=10)
+            sha = resp.json().get("sha") if resp.ok else None
+            # Пропускаем если содержимое не изменилось
+            if sha and resp.ok:
+                remote_b64 = resp.json().get("content", "").replace("\n", "")
+                if remote_b64 == content_b64:
+                    continue
+            payload = {"message": f"autosave: {fname}", "content": content_b64}
+            if sha:
+                payload["sha"] = sha
+            r = _req.put(f"{base_url}/{fname}", json=payload, headers=headers, timeout=10)
+            if r.ok:
+                changed.append(fname)
+    except Exception:
+        pass
+
+@st.cache_resource
+def _start_git_autosave():
+    def _loop():
+        while True:
+            time.sleep(3600)
+            _github_commit_files()
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return t
+
+
 # ── Telegram helpers ──────────────────────────────────────────────────────
 
 def _tg_request(method: str, **kwargs):
@@ -2005,6 +2052,8 @@ apply_theme(get_theme())
 _ensure_admin()
 # Запускаем фоновый polling Telegram (один раз на весь процесс)
 _start_tg_polling()
+# Автосохранение данных в GitHub раз в час
+_start_git_autosave()
 # Переводим старые числовые периоды в истории в формат с месяцем словом
 migrate_history_periods()
 
