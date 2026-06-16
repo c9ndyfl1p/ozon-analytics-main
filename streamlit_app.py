@@ -659,10 +659,21 @@ def render_recommendations(df: pd.DataFrame):
 
 # ── Боковая панель истории ─────────────────────────────────────────────────
 
+def delete_history_entry(kind: str, rec_id: str):
+    hist = get_history()
+    entry = next((e for e in hist[kind] if e["id"] == rec_id), None)
+    if entry:
+        try:
+            Path(entry["parquet"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+        hist[kind] = [e for e in hist[kind] if e["id"] != rec_id]
+        _save_history()
+
 def render_history_sidebar(kind: str) -> dict | None:
     """
     Показывает историю загрузок в боковой панели.
-    Возвращает запись истории, если пользователь нажал «Загрузить».
+    Возвращает запись истории, если пользователь нажал «Открыть».
     """
     entries = get_history().get(kind, [])
     if not entries:
@@ -674,17 +685,22 @@ def render_history_sidebar(kind: str) -> dict | None:
     selected = None
     for e in entries:
         m = e.get("metrics", {})
-        label = f"📅 {e['period']}"
         caption = f"Загружен {e['uploaded_at']}"
         if m:
             caption += f" · Прибыль: {m.get('profit', 0):,.0f} ₽"
 
         with st.sidebar.container(border=True):
-            st.markdown(f"**{label}**")
+            st.markdown(f"**📅 {e['period']}**")
             st.caption(caption)
             st.caption(f"Файл: {e['filename']}")
-            if st.button("Открыть", key=f"hist_{kind}_{e['id']}"):
-                selected = e
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                if st.button("Открыть", key=f"hist_{kind}_{e['id']}", use_container_width=True):
+                    selected = e
+            with c2:
+                if st.button("🗑️", key=f"del_{kind}_{e['id']}", help="Удалить из истории"):
+                    delete_history_entry(kind, e["id"])
+                    st.rerun()
 
     return selected
 
