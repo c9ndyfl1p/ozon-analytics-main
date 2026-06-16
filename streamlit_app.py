@@ -2035,6 +2035,12 @@ def admin_panel():
                 set_users(users)
                 st.rerun()
 
+    st.markdown("---")
+    if st.button("💾 Сохранить данные в GitHub сейчас", type="primary", use_container_width=True):
+        with st.spinner("Сохраняю..."):
+            _github_commit_files()
+        st.success("Готово — проверь коммиты на GitHub.")
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # ГЛАВНАЯ
