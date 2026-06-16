@@ -1045,7 +1045,8 @@ def render_kpi(df: pd.DataFrame, kind: str = "", current_period: str = ""):
     c3.metric("Рентабельность", f"{margin:.1f}%",   delta=_d_pct(margin, "margin"))
     c4.metric("Заказов",        f"{qty:,} шт.",     delta=_d_qty(qty, "orders"))
 
-def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление от ОЗОН", key_prefix: str = ""):
+def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление от ОЗОН",
+                     key_prefix: str = "", df_raw: pd.DataFrame | None = None):
     grp = df.groupby("SKU", sort=False).agg(
         name  =("Название товара", "first"),
         qty   =("Количество",       "sum"),
@@ -1098,7 +1099,7 @@ def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление
         key=f"{key_prefix}tbl_{source_col}",
     )
 
-    # ── Раскрываемые детали по выбранной строке ───────────────────────────
+    # ── Уровень 2: операции по выбранному SKU ─────────────────────────────
     rows = event.selection.rows if hasattr(event, "selection") else []
     if rows:
         idx = rows[0]
@@ -1106,24 +1107,62 @@ def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление
             sel_sku  = grp.iloc[idx]["SKU"]
             sel_name = grp.iloc[idx]["Название товара"]
             ops = df[df["SKU"] == sel_sku].copy()
+            if "Дата начисления" in ops.columns:
+                ops = ops.sort_values("Дата начисления")
             detail_cols = [c for c in
                            ["ID начисления", "Номер заказа", "Дата начисления",
                             "Тип начисления", "Количество", "Выручка", "Расходы",
                             source_col, "Прибыль"]
                            if c in ops.columns]
-            if "Дата начисления" in ops.columns:
-                ops = ops.sort_values("Дата начисления")
-            with st.expander(f"📋 Операции: {sel_name}  ·  SKU {sel_sku}  ·  {len(ops)} шт.", expanded=True):
-                st.dataframe(
-                    ops[detail_cols].style.format(
-                        {c: "{:,.2f}" for c in ["Выручка", "Расходы", source_col, "Прибыль"] if c in detail_cols}
-                    ).map(
-                        lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0
-                                  else "color: #22C55E" if isinstance(v, (int, float)) and v > 0 else "",
-                        subset=[c for c in ["Прибыль"] if c in detail_cols]
-                    ),
-                    use_container_width=True, hide_index=True,
-                )
+            money_cols = [c for c in ["Выручка", "Расходы", source_col, "Прибыль"] if c in detail_cols]
+
+            can_drill = df_raw is not None and "ID начисления" in ops.columns
+
+            with st.expander(
+                f"📋 Заказы: {sel_name}  ·  SKU {sel_sku}  ·  {len(ops)} шт."
+                + (" · Кликните строку → все операции по начислению" if can_drill else ""),
+                expanded=True,
+            ):
+                ops = ops.reset_index(drop=True)
+                if can_drill:
+                    ops_event = st.dataframe(
+                        ops[detail_cols].style
+                            .format({c: "{:,.2f}" for c in money_cols})
+                            .map(lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0
+                                 else "color: #22C55E" if isinstance(v, (int, float)) and v > 0 else "",
+                                 subset=[c for c in ["Прибыль"] if c in detail_cols]),
+                        use_container_width=True, hide_index=True,
+                        on_select="rerun", selection_mode="single-row",
+                        key=f"{key_prefix}ops_{sel_sku}",
+                    )
+                    # ── Уровень 3: сырые строки начисления ──────────────────
+                    ops_rows = ops_event.selection.rows if hasattr(ops_event, "selection") else []
+                    if ops_rows:
+                        order_id = str(ops.iloc[ops_rows[0]].get("ID начисления", "")).strip()
+                        if order_id:
+                            raw_id_col = "ID начисления"
+                            raw_match = df_raw[
+                                df_raw[raw_id_col].astype(str).str.strip() == order_id
+                            ].copy()
+                            raw_show = [c for c in df_raw.columns
+                                        if c not in ("ID начисления",)
+                                        and not str(c).startswith("Unnamed")]
+                            raw_show = ["ID начисления"] + raw_show
+                            raw_show = [c for c in raw_show if c in raw_match.columns]
+                            st.markdown(f"**🔍 Все строки начисления `{order_id}`** — {len(raw_match)} операций")
+                            st.dataframe(
+                                raw_match[raw_show].reset_index(drop=True),
+                                use_container_width=True, hide_index=True,
+                            )
+                else:
+                    st.dataframe(
+                        ops[detail_cols].style
+                            .format({c: "{:,.2f}" for c in money_cols})
+                            .map(lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0
+                                 else "color: #22C55E" if isinstance(v, (int, float)) and v > 0 else "",
+                                 subset=[c for c in ["Прибыль"] if c in detail_cols]),
+                        use_container_width=True, hide_index=True,
+                    )
 
     st.download_button("📥 Скачать Excel", df_to_excel(grp, "Аналитика"),
                        "analytics.xlsx",
@@ -1280,7 +1319,8 @@ def page_ozon():
         ["📋 Начисления", "🔄 Возвраты", "📊 Графики", "📈 Сравнение", "💡 Рекомендации"])
 
     with tab1:
-        render_sku_table(regular, key_prefix="ozon_")
+        render_sku_table(regular, key_prefix="ozon_",
+                         df_raw=st.session_state.get("ozon_df_raw"))
         if returns is not None and not returns.empty:
             with st.expander(f"↩ Возвраты — {len(returns)} шт. (сводка)"):
                 ret_summary = {
