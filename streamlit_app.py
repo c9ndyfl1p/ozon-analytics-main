@@ -399,8 +399,12 @@ def _tg_request(method: str, **kwargs):
     except Exception:
         pass
 
-def _tg_send(text: str, reply_markup: dict | None = None):
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+def _tg_send(text: str, reply_markup: dict | None = None, chat_id: str | None = None):
+    payload = {
+        "chat_id": chat_id or TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+    }
     if reply_markup:
         payload["reply_markup"] = reply_markup
     _tg_request("sendMessage", **payload)
@@ -416,15 +420,74 @@ def _tg_notify_registration(username: str):
         },
     )
 
+def _tg_format_reports(kind: str, count: int = 3) -> str:
+    label = "🟠 OZON" if kind == "ozon" else "🟡 Яндекс Маркет"
+    entries = get_history().get(kind, [])
+    if not entries:
+        return f"{label}\n\nОтчётов пока нет."
+    lines = [f"<b>{label}</b>"]
+    for e in entries[:count]:
+        m = e.get("metrics", {})
+        if not m:
+            continue
+        revenue = m.get("revenue", 0)
+        profit  = m.get("profit", 0)
+        margin  = m.get("margin", 0)
+        orders  = m.get("orders", 0)
+        lines.append(
+            f"\n📅 <b>{e.get('period', '—')}</b>\n"
+            f"💰 Выручка: <b>{revenue:,.0f} ₽</b>\n"
+            f"{'✅' if profit >= 0 else '🔴'} Прибыль: <b>{profit:,.0f} ₽</b>\n"
+            f"📈 Рентабельность: <b>{margin:.1f}%</b>\n"
+            f"📦 Заказов: <b>{orders:,} шт.</b>"
+        )
+    return "\n".join(lines) if len(lines) > 1 else f"{label}\n\nДанных в отчётах нет."
+
+def _tg_handle_command(text: str, chat_id: str):
+    cmd = text.strip().lower().split()[0].split("@")[0]
+    if cmd == "/start":
+        _tg_send(
+            "👋 <b>Аналитика маркетплейсов</b>\n\n"
+            "Доступные команды:\n"
+            "/ozon — последние отчёты OZON\n"
+            "/ym — последние отчёты Яндекс Маркет\n"
+            "/stats — сводка по обоим\n"
+            "/users — список пользователей",
+            chat_id=chat_id,
+        )
+    elif cmd == "/ozon":
+        _tg_send(_tg_format_reports("ozon"), chat_id=chat_id)
+    elif cmd == "/ym":
+        _tg_send(_tg_format_reports("ym"), chat_id=chat_id)
+    elif cmd == "/stats":
+        msg = _tg_format_reports("ozon") + "\n\n" + _tg_format_reports("ym", count=2)
+        _tg_send(msg, chat_id=chat_id)
+    elif cmd == "/users":
+        users = get_users()
+        approved = [u for u, d in users.items() if d.get("status") == "approved" and u != ADMIN_LOGIN]
+        pending  = [u for u, d in users.items() if d.get("status") == "pending"]
+        lines = ["<b>👤 Пользователи</b>"]
+        if approved:
+            lines.append("\n✅ <b>Одобренные:</b>")
+            for u in approved:
+                comment = users[u].get("comment", "")
+                lines.append(f"  • {u}" + (f" — {comment}" if comment else ""))
+        if pending:
+            lines.append("\n⏳ <b>Ожидают одобрения:</b>")
+            for u in pending:
+                lines.append(f"  • {u}")
+        if not approved and not pending:
+            lines.append("\nПользователей нет.")
+        _tg_send("\n".join(lines), chat_id=chat_id)
+
 @st.cache_resource
 def _start_tg_polling():
-    """Запускает фоновый поток long-polling для обработки кнопок бота."""
     def _poll():
         offset = None
         while True:
             try:
                 import requests as _req
-                params: dict = {"timeout": 30}
+                params: dict = {"timeout": 30, "allowed_updates": ["message", "callback_query"]}
                 if offset is not None:
                     params["offset"] = offset
                 resp = _req.get(
@@ -434,27 +497,31 @@ def _start_tg_polling():
                 )
                 for update in resp.json().get("result", []):
                     offset = update["update_id"] + 1
+
+                    # Команды
+                    msg = update.get("message") or update.get("channel_post")
+                    if msg and msg.get("text", "").startswith("/"):
+                        _tg_handle_command(msg["text"], str(msg["chat"]["id"]))
+                        continue
+
+                    # Кнопки регистрации
                     cb = update.get("callback_query")
                     if not cb:
                         continue
-                    data      = cb.get("data", "")
-                    chat_id   = cb["message"]["chat"]["id"]
-                    msg_id    = cb["message"]["message_id"]
-                    cb_id     = cb["id"]
-                    _tg_request("answerCallbackQuery", callback_query_id=cb_id)
+                    data    = cb.get("data", "")
+                    chat_id = cb["message"]["chat"]["id"]
+                    msg_id  = cb["message"]["message_id"]
+                    _tg_request("answerCallbackQuery", callback_query_id=cb["id"])
                     if data.startswith("approve:"):
                         uname = data[len("approve:"):]
                         users = get_users()
                         if uname in users and users[uname].get("status") == "pending":
                             users[uname]["status"] = "approved"
                             set_users(users)
-                            _tg_request("editMessageText",
-                                        chat_id=chat_id, message_id=msg_id,
-                                        text=f"✅ Пользователь <b>{uname}</b> одобрен.",
-                                        parse_mode="HTML")
+                            _tg_request("editMessageText", chat_id=chat_id, message_id=msg_id,
+                                        text=f"✅ Пользователь <b>{uname}</b> одобрен.", parse_mode="HTML")
                         else:
-                            _tg_request("editMessageText",
-                                        chat_id=chat_id, message_id=msg_id,
+                            _tg_request("editMessageText", chat_id=chat_id, message_id=msg_id,
                                         text=f"⚠️ Пользователь <b>{uname}</b> не найден или уже обработан.",
                                         parse_mode="HTML")
                     elif data.startswith("reject:"):
@@ -463,10 +530,8 @@ def _start_tg_polling():
                         if uname in users:
                             del users[uname]
                             set_users(users)
-                            _tg_request("editMessageText",
-                                        chat_id=chat_id, message_id=msg_id,
-                                        text=f"❌ Пользователь <b>{uname}</b> отклонён и удалён.",
-                                        parse_mode="HTML")
+                            _tg_request("editMessageText", chat_id=chat_id, message_id=msg_id,
+                                        text=f"❌ Пользователь <b>{uname}</b> отклонён и удалён.", parse_mode="HTML")
             except Exception:
                 time.sleep(5)
 
