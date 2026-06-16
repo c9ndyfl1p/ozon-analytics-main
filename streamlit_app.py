@@ -34,22 +34,16 @@ MONTHS_RU = {
     9: "сентября", 10: "октября", 11: "ноября", 12: "декабря",
 }
 
-# ── Темы ──────────────────────────────────────────────────────────────────
+# ── Тема (только тёмная) ──────────────────────────────────────────────────
 DARK_THEME = dict(
     name="dark",
     bg="#0F172A",    card="#1E293B",   text="#E2E8F0",  muted="#94A3B8",
     primary="#3B82F6", success="#22C55E", danger="#EF4444", warning="#F59E0B",
     border="#334155", input_bg="#0F172A",
 )
-LIGHT_THEME = dict(
-    name="light",
-    bg="#F8FAFC",    card="#FFFFFF",   text="#0F172A",  muted="#64748B",
-    primary="#2563EB", success="#15803D", danger="#DC2626", warning="#B45309",
-    border="#E2E8F0", input_bg="#F1F5F9",
-)
 
 def get_theme() -> dict:
-    return LIGHT_THEME if st.session_state.get("theme") == "light" else DARK_THEME
+    return DARK_THEME
 
 def apply_theme(t: dict):
     st.markdown(f"""<style>
@@ -344,6 +338,7 @@ def load_report_from_history(entry: dict):
 # ══════════════════════════════════════════════════════════════════════════
 # ПАРСЕРЫ
 # ══════════════════════════════════════════════════════════════════════════
+
 
 def parse_amount(s) -> float:
     if pd.isna(s):
@@ -672,6 +667,138 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль",
         ann.font.color = t["muted"]
         ann.font.size  = 12
     return fig
+
+# ── Полноэкранный график ───────────────────────────────────────────────────
+
+_PLOTLY_CFG = dict(
+    scrollZoom=True,
+    doubleClick="reset",
+    displayModeBar=True,
+    modeBarButtonsToRemove=["lasso2d", "select2d"],
+    toImageButtonOptions={"format": "png", "scale": 2},
+)
+
+@st.dialog("📊 График", width="large")
+def _chart_fullscreen(fig: go.Figure):
+    st.plotly_chart(fig, use_container_width=True, config=_PLOTLY_CFG)
+
+def show_chart(fig: go.Figure, key: str):
+    """Показывает график + кнопку открытия на весь экран."""
+    st.plotly_chart(fig, use_container_width=True, config=_PLOTLY_CFG)
+    if st.button("⛶ На весь экран", key=f"fs_{key}"):
+        _chart_fullscreen(fig)
+
+# ── Сравнение периодов ────────────────────────────────────────────────────
+
+def load_report_processed(kind: str, entry: dict) -> pd.DataFrame | None:
+    """Загружает сырой parquet и перегоняет через бизнес-логику с текущей себестоимостью."""
+    df_raw = load_report_from_history(entry)
+    if df_raw is None:
+        return None
+    try:
+        if kind == "ozon":
+            regular, _ = build_accrual_summary(df_raw)
+            return regular
+        else:
+            return build_ym_summary(df_raw)
+    except Exception:
+        return None
+
+def make_comparison_chart(dfs_by_period: dict, metric: str, t: dict) -> go.Figure:
+    """dfs_by_period: {period_label: DataFrame} — каждый df содержит 'Дата начисления'."""
+    palette = [t["primary"], t["success"], t["warning"], t["danger"],
+               "#A855F7", "#F97316", "#06B6D4", "#EC4899"]
+    metric_labels = {
+        "Выручка":    "Выручка, ₽",
+        "Прибыль":    "Чистая прибыль, ₽",
+        "Количество": "Заказов, шт.",
+    }
+
+    fig = go.Figure()
+    for i, (period, df) in enumerate(dfs_by_period.items()):
+        if "Дата начисления" not in df.columns or metric not in df.columns:
+            continue
+        clean = df[df["Дата начисления"].notna()].copy()
+        by_d = (clean.groupby("Дата начисления")[metric]
+                .sum().reset_index().sort_values("Дата начисления"))
+        by_d["day"] = range(1, len(by_d) + 1)
+        color = palette[i % len(palette)]
+        fig.add_trace(go.Scatter(
+            x=by_d["day"], y=by_d[metric],
+            name=period,
+            mode="lines+markers",
+            line=dict(color=color, width=2),
+            marker=dict(size=5, color=color),
+            hovertemplate=(
+                f"<b>{period}</b><br>"
+                f"День %{{x}}<br>"
+                f"{metric_labels.get(metric, metric)}: %{{y:,.0f}}<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        paper_bgcolor=t["bg"], plot_bgcolor=t["card"],
+        font=dict(color=t["text"], size=11), height=430,
+        xaxis_title="День периода", yaxis_title=metric_labels.get(metric, metric),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=t["text"])),
+        margin=dict(l=10, r=10, t=20, b=40),
+        hovermode="x unified",
+    )
+    fig.update_xaxes(gridcolor=t["border"])
+    fig.update_yaxes(gridcolor=t["border"])
+    return fig
+
+def render_comparison_tab(kind: str, current_period: str, current_df: pd.DataFrame,
+                          key_prefix: str):
+    """Вкладка сравнения динамики нескольких отчётов."""
+    t = get_theme()
+    hist = get_history().get(kind, [])
+    hist_options = {e["period"]: e for e in hist if e.get("parquet") and Path(e["parquet"]).exists()}
+
+    all_options = list(hist_options.keys())
+    if not all_options:
+        st.info("Нет сохранённых отчётов для сравнения. Загрузите ещё один период.")
+        return
+
+    col_sel, col_met = st.columns([3, 1])
+    with col_sel:
+        selected = st.multiselect(
+            "Периоды для сравнения",
+            options=all_options,
+            default=all_options[:min(3, len(all_options))],
+            key=f"{key_prefix}cmp_periods",
+        )
+    with col_met:
+        metric = st.selectbox(
+            "Метрика",
+            ["Выручка", "Прибыль", "Количество"],
+            format_func=lambda x: {"Выручка": "Выручка", "Прибыль": "Чистая прибыль", "Количество": "Заказов"}[x],
+            key=f"{key_prefix}cmp_metric",
+        )
+
+    if not selected:
+        st.caption("Выберите хотя бы один период")
+        return
+
+    dfs_by_period: dict = {}
+    if current_period and not current_df.empty and current_period in selected:
+        dfs_by_period[current_period] = current_df
+    for period_label in selected:
+        if period_label == current_period:
+            continue
+        entry = hist_options.get(period_label)
+        if entry:
+            with st.spinner(f"Загрузка {period_label}…"):
+                df_h = load_report_processed(kind, entry)
+            if df_h is not None and not df_h.empty:
+                dfs_by_period[period_label] = df_h
+
+    if not dfs_by_period:
+        st.warning("Не удалось загрузить данные для выбранных периодов")
+        return
+
+    fig = make_comparison_chart(dfs_by_period, metric, t)
+    show_chart(fig, f"{key_prefix}cmp")
 
 # ══════════════════════════════════════════════════════════════════════════
 # КАЛЬКУЛЯТОР ЦЕН
@@ -1023,7 +1150,8 @@ def page_ozon():
     render_kpi(regular, kind="ozon", current_period=period)
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Начисления", "🔄 Возвраты", "📊 Графики", "💡 Рекомендации"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📋 Начисления", "🔄 Возвраты", "📊 Графики", "📈 Сравнение", "💡 Рекомендации"])
 
     with tab1:
         render_sku_table(regular, key_prefix="ozon_")
@@ -1093,9 +1221,12 @@ def page_ozon():
 
     with tab3:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"], horizontal=True)
-        st.plotly_chart(make_analytics_charts(regular, metric, get_theme()), use_container_width=True)
+        show_chart(make_analytics_charts(regular, metric, get_theme()), "ozon_main")
 
     with tab4:
+        render_comparison_tab("ozon", period, regular, "ozon_")
+
+    with tab5:
         st.subheader("💡 Умные рекомендации")
         render_recommendations(regular)
 
@@ -1178,7 +1309,8 @@ def page_ym():
     render_kpi(df, kind="ym", current_period=period)
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["📋 Сводка по SKU", "📊 Графики", "💡 Рекомендации"])
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📋 Сводка по SKU", "📊 Графики", "📈 Сравнение", "💡 Рекомендации"])
 
     with tab1:
         render_sku_table(df, source_col="Поступление от ОЗОН", key_prefix="ym_")
@@ -1186,9 +1318,12 @@ def page_ym():
     with tab2:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"],
                           horizontal=True, key="ym_metric")
-        st.plotly_chart(make_analytics_charts(df, metric, get_theme()), use_container_width=True)
+        show_chart(make_analytics_charts(df, metric, get_theme()), "ym_main")
 
     with tab3:
+        render_comparison_tab("ym", period, df, "ym_")
+
+    with tab4:
         st.subheader("💡 Умные рекомендации")
         render_recommendations(df)
 
@@ -1411,11 +1546,6 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-is_dark = st.session_state.get("theme", "dark") == "dark"
-if st.sidebar.button("☀️ Светлая тема" if is_dark else "🌙 Тёмная тема",
-                     use_container_width=True):
-    st.session_state.theme = "light" if is_dark else "dark"
-    st.rerun()
 
 # ── Страницы ──────────────────────────────────────────────────────────────
 if page == "📊 OZON Аналитика":
