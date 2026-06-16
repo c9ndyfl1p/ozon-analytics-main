@@ -24,7 +24,7 @@ HISTORY_DIR     = BASE_DIR / "history"
 USERS_FILE      = BASE_DIR / "users.json"
 
 ADMIN_LOGIN    = "admin"
-ADMIN_PASSWORD = "admin"
+ADMIN_PASSWORD = "Allroad016"
 
 # ── Константы ─────────────────────────────────────────────────────────────
 TARIFF_PER_L  = 1.9
