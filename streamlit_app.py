@@ -18,8 +18,12 @@ import streamlit as st
 
 # ── Пути к файлам ─────────────────────────────────────────────────────────
 BASE_DIR        = Path(__file__).parent
-COSTS_FILE      = BASE_DIR / "costs_db.json"
-COST_NAMES_FILE = BASE_DIR / "cost_names.json"
+COSTS_FILE      = BASE_DIR / "costs_db.json"       # legacy
+COST_NAMES_FILE = BASE_DIR / "cost_names.json"     # legacy
+COSTS_OZON_FILE      = BASE_DIR / "costs_db_ozon.json"
+COSTS_YM_FILE        = BASE_DIR / "costs_db_ym.json"
+COST_NAMES_OZON_FILE = BASE_DIR / "cost_names_ozon.json"
+COST_NAMES_YM_FILE   = BASE_DIR / "cost_names_ym.json"
 RETURNS_FILE    = BASE_DIR / "returns_settings.json"
 STATE_FILE      = BASE_DIR / "ozon_state.json"
 HISTORY_FILE    = BASE_DIR / "history.json"
@@ -255,28 +259,41 @@ def _shared() -> dict:
     Инициализируется из файлов при старте приложения.
     """
     HISTORY_DIR.mkdir(exist_ok=True)
+    # Миграция из единой базы в раздельные (один раз)
+    legacy = _read_json(COSTS_FILE, {})
+    legacy_names = _read_json(COST_NAMES_FILE, {})
+    def _init_costs(path):
+        if not path.exists() and legacy:
+            _write_json(path, legacy)
+        return _read_json(path, {})
+    def _init_names(path):
+        if not path.exists() and legacy_names:
+            _write_json(path, legacy_names)
+        return _read_json(path, {})
     return {
-        "costs":           _read_json(COSTS_FILE, {}),
-        "cost_names":      _read_json(COST_NAMES_FILE, {}),
+        "costs_ozon":      _init_costs(COSTS_OZON_FILE),
+        "costs_ym":        _init_costs(COSTS_YM_FILE),
+        "cost_names_ozon": _init_names(COST_NAMES_OZON_FILE),
+        "cost_names_ym":   _init_names(COST_NAMES_YM_FILE),
         "return_settings": _read_json(RETURNS_FILE, {}),
         "history":         _read_json(HISTORY_FILE, {"ozon": [], "ym": []}),
         "users":           _read_json(USERS_FILE, {}),
     }
 
 # Обёртки для чтения/записи через shared state
-def get_costs() -> dict:
-    return _shared()["costs"]
+def get_costs(kind: str = "ozon") -> dict:
+    return _shared()[f"costs_{kind}"]
 
-def set_costs(costs: dict):
-    _shared()["costs"] = costs
-    _write_json(COSTS_FILE, costs)
+def set_costs(costs: dict, kind: str = "ozon"):
+    _shared()[f"costs_{kind}"] = costs
+    _write_json(COSTS_OZON_FILE if kind == "ozon" else COSTS_YM_FILE, costs)
 
-def get_cost_names() -> dict:
-    return _shared()["cost_names"]
+def get_cost_names(kind: str = "ozon") -> dict:
+    return _shared()[f"cost_names_{kind}"]
 
-def set_cost_names(names: dict):
-    _shared()["cost_names"] = names
-    _write_json(COST_NAMES_FILE, names)
+def set_cost_names(names: dict, kind: str = "ozon"):
+    _shared()[f"cost_names_{kind}"] = names
+    _write_json(COST_NAMES_OZON_FILE if kind == "ozon" else COST_NAMES_YM_FILE, names)
 
 def get_return_settings() -> dict:
     return _shared()["return_settings"]
@@ -317,7 +334,9 @@ def _ensure_admin():
 # ── GitHub autosave ───────────────────────────────────────────────────────
 
 GITHUB_REPO      = "c9ndyfl1p/ozon-analytics-main"
-_DATA_FILES      = ["costs_db.json", "cost_names.json", "users.json", "history.json"]
+_DATA_FILES      = ["costs_db_ozon.json", "costs_db_ym.json",
+                    "cost_names_ozon.json", "cost_names_ym.json",
+                    "users.json", "history.json"]
 
 def _github_commit_files():
     try:
@@ -681,7 +700,7 @@ def build_accrual_summary(df: pd.DataFrame):
     return regular, returns
 
 def build_ym_summary(df_raw: pd.DataFrame) -> pd.DataFrame:
-    costs = get_costs()
+    costs = get_costs("ym")
     def _find(*kws):
         return next((c for c in df_raw.columns if all(k.lower() in c.lower() for k in kws)), None)
 
@@ -1676,14 +1695,11 @@ def _make_costs_excel(costs: dict, cost_names: dict) -> bytes:
     return df_to_excel(pd.DataFrame(rows), "Себестоимость")
 
 
-def page_costs():
-    st.header("💰 База себестоимости")
-    st.caption("Общая для всех пользователей — изменения видны сразу у всех")
+def _costs_panel(kind: str):
+    k = kind
+    costs      = get_costs(k)
+    cost_names = get_cost_names(k)
 
-    costs      = get_costs()
-    cost_names = get_cost_names()
-
-    # ── Шапка: скачать шаблон / экспорт ──────────────────────────────────
     c_tmpl, c_exp, _ = st.columns([2, 2, 6])
     with c_tmpl:
         tmpl_bytes = df_to_excel(
@@ -1696,43 +1712,41 @@ def page_costs():
             "шаблон_себестоимость.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
+            key=f"costs_tmpl_{k}",
         )
     with c_exp:
         st.download_button(
             "📤 Экспорт текущей базы",
             _make_costs_excel(costs, cost_names),
-            "себестоимость.xlsx",
+            f"себестоимость_{k}.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
-            help="Скачайте, отредактируйте и загрузите обратно",
+            key=f"costs_exp_{k}",
         )
 
     st.divider()
     col_left, col_right = st.columns([1, 2])
 
-    # ── Левая: импорт + добавить вручную + удалить ────────────────────────
     with col_left:
         with st.container(border=True):
             st.subheader("📥 Загрузить заполненный файл")
             st.caption("Колонки: **SKU / Артикул**, **Название товара**, **Себестоимость, руб.**")
-            imp = st.file_uploader("Excel или CSV", type=["xlsx", "xls", "csv"], key="costs_imp")
+            imp = st.file_uploader("Excel или CSV", type=["xlsx", "xls", "csv"], key=f"costs_imp_{k}")
             if imp:
                 try:
                     df_imp = (pd.read_csv(imp, dtype=str) if imp.name.endswith(".csv")
                               else pd.read_excel(imp, dtype=str))
                     df_imp.columns = [str(c).strip() for c in df_imp.columns]
                     cols_lower = {c.lower(): c for c in df_imp.columns}
-
-                    sku_col  = next((cols_lower[k] for k in cols_lower
-                                     if any(x in k for x in ["sku", "артикул", "id"])), df_imp.columns[0])
-                    name_col = next((cols_lower[k] for k in cols_lower
-                                     if any(x in k for x in ["название", "наименование", "name"])), None)
-                    cost_col = next((cols_lower[k] for k in cols_lower
-                                     if any(x in k for x in ["себестоимость", "цена", "cost", "price"])),
+                    sku_col  = next((cols_lower[x] for x in cols_lower
+                                     if any(t in x for t in ["sku", "артикул", "id"])), df_imp.columns[0])
+                    name_col = next((cols_lower[x] for x in cols_lower
+                                     if any(t in x for t in ["название", "наименование", "name"])), None)
+                    cost_col = next((cols_lower[x] for x in cols_lower
+                                     if any(t in x for t in ["себестоимость", "цена", "cost", "price"])),
                                     df_imp.columns[1] if len(df_imp.columns) > 1 else df_imp.columns[0])
-
-                    new_costs = dict(get_costs())
-                    new_names = dict(get_cost_names())
+                    new_costs = dict(get_costs(k))
+                    new_names = dict(get_cost_names(k))
                     count = 0
                     for _, row in df_imp.iterrows():
                         sv = str(row.get(sku_col, "")).strip()
@@ -1749,8 +1763,8 @@ def page_costs():
                             nv = str(row.get(name_col, "")).strip()
                             if nv and nv.lower() != "nan":
                                 new_names[sv] = nv
-                    set_costs(new_costs)
-                    set_cost_names(new_names)
+                    set_costs(new_costs, k)
+                    set_cost_names(new_names, k)
                     st.success(f"✓ Импортировано: {count} записей")
                     st.rerun()
                 except Exception as e:
@@ -1758,41 +1772,40 @@ def page_costs():
 
         with st.container(border=True):
             st.subheader("➕ Добавить / изменить")
-            sku_in  = st.text_input("Артикул или SKU", key="costs_sku_in")
-            name_in = st.text_input("Название (необязательно)", key="costs_name_in")
-            cost_in = st.number_input("Себестоимость, руб.", min_value=0.0, step=100.0, key="costs_cost_in")
-            if st.button("💾 Сохранить", type="primary", use_container_width=True, key="costs_save"):
+            sku_in  = st.text_input("Артикул или SKU", key=f"costs_sku_in_{k}")
+            name_in = st.text_input("Название (необязательно)", key=f"costs_name_in_{k}")
+            cost_in = st.number_input("Себестоимость, руб.", min_value=0.0, step=100.0, key=f"costs_cost_in_{k}")
+            if st.button("💾 Сохранить", type="primary", use_container_width=True, key=f"costs_save_{k}"):
                 if sku_in.strip():
-                    c = dict(get_costs())
+                    c = dict(get_costs(k))
                     c[sku_in.strip()] = cost_in
-                    set_costs(c)
+                    set_costs(c, k)
                     if name_in.strip():
-                        n = dict(get_cost_names())
+                        n = dict(get_cost_names(k))
                         n[sku_in.strip()] = name_in.strip()
-                        set_cost_names(n)
+                        set_cost_names(n, k)
                     st.success(f"✓ {sku_in.strip()} = {cost_in:.2f} руб.")
                     st.rerun()
 
         with st.container(border=True):
             st.subheader("🗑️ Удалить")
-            del_sku = st.text_input("SKU для удаления", key="costs_del_sku")
-            if st.button("Удалить", type="secondary", use_container_width=True, key="costs_del"):
-                cur = dict(get_costs())
+            del_sku = st.text_input("SKU для удаления", key=f"costs_del_sku_{k}")
+            if st.button("Удалить", type="secondary", use_container_width=True, key=f"costs_del_{k}"):
+                cur = dict(get_costs(k))
                 if del_sku.strip() in cur:
                     del cur[del_sku.strip()]
-                    set_costs(cur)
-                    cur_n = dict(get_cost_names())
+                    set_costs(cur, k)
+                    cur_n = dict(get_cost_names(k))
                     cur_n.pop(del_sku.strip(), None)
-                    set_cost_names(cur_n)
+                    set_cost_names(cur_n, k)
                     st.success(f"✓ Удалено: {del_sku}")
                     st.rerun()
                 else:
                     st.warning("SKU не найден")
 
-    # ── Правая: таблица ───────────────────────────────────────────────────
     with col_right:
-        costs      = get_costs()
-        cost_names = get_cost_names()
+        costs      = get_costs(k)
+        cost_names = get_cost_names(k)
         st.subheader(f"Текущая база ({len(costs)} записей)")
         if costs:
             rows_c = [{"Артикул / SKU": sku_v,
@@ -1800,7 +1813,7 @@ def page_costs():
                        "Себестоимость, руб.": float(v)}
                       for sku_v, v in sorted(costs.items())]
             df_costs = pd.DataFrame(rows_c)
-            search_c = st.text_input("🔍 Поиск", key="costs_search")
+            search_c = st.text_input("🔍 Поиск", key=f"costs_search_{k}")
             if search_c:
                 mask = (df_costs["Артикул / SKU"].str.contains(search_c, case=False, na=False) |
                         df_costs["Название товара"].str.contains(search_c, case=False, na=False))
@@ -1808,6 +1821,17 @@ def page_costs():
             st.dataframe(df_costs, use_container_width=True, hide_index=True, height=560)
         else:
             st.info("База пуста — скачайте шаблон, заполните и загрузите.")
+
+
+def page_costs():
+    st.header("💰 База себестоимости")
+    st.caption("Общая для всех пользователей — изменения видны сразу у всех")
+
+    tab_oz, tab_ym = st.tabs(["🟠 OZON", "🟡 Яндекс Маркет"])
+    with tab_oz:
+        _costs_panel("ozon")
+    with tab_ym:
+        _costs_panel("ym")
 
 
 def page_calculator():
