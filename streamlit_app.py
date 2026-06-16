@@ -1738,34 +1738,38 @@ def _costs_panel(kind: str):
                               else pd.read_excel(imp, dtype=str))
                     df_imp.columns = [str(c).strip() for c in df_imp.columns]
                     cols_lower = {c.lower(): c for c in df_imp.columns}
-                    sku_col  = next((cols_lower[x] for x in cols_lower
-                                     if any(t in x for t in ["sku", "артикул", "id"])), df_imp.columns[0])
-                    name_col = next((cols_lower[x] for x in cols_lower
-                                     if any(t in x for t in ["название", "наименование", "name"])), None)
-                    cost_col = next((cols_lower[x] for x in cols_lower
-                                     if any(t in x for t in ["себестоимость", "цена", "cost", "price"])),
-                                    df_imp.columns[1] if len(df_imp.columns) > 1 else df_imp.columns[0])
+                    sku_col   = next((cols_lower[x] for x in cols_lower
+                                      if any(t in x for t in ["sku", "артикул", "id"])), df_imp.columns[0])
+                    name_col  = next((cols_lower[x] for x in cols_lower
+                                      if any(t in x for t in ["название", "наименование", "name"])), None)
+                    cost_col  = next((cols_lower[x] for x in cols_lower
+                                      if any(t in x for t in ["себестоимость", "цена", "cost", "price"])), None)
                     new_costs = dict(get_costs(k))
                     new_names = dict(get_cost_names(k))
-                    count = 0
+                    count_c, count_n = 0, 0
                     for _, row in df_imp.iterrows():
                         sv = str(row.get(sku_col, "")).strip()
                         if not sv or sv.lower() in ("nan", "sku / артикул", ""):
                             continue
-                        cs = (str(row.get(cost_col, "0")).replace("₽", "")
-                              .replace("\xa0", "").replace(" ", "").replace(",", "."))
-                        try:
-                            new_costs[sv] = float(cs)
-                            count += 1
-                        except ValueError:
-                            continue
+                        if cost_col:
+                            cs = (str(row.get(cost_col, "")).replace("₽", "")
+                                  .replace("\xa0", "").replace(" ", "").replace(",", "."))
+                            try:
+                                new_costs[sv] = float(cs)
+                                count_c += 1
+                            except ValueError:
+                                pass
                         if name_col:
                             nv = str(row.get(name_col, "")).strip()
                             if nv and nv.lower() != "nan":
                                 new_names[sv] = nv
+                                count_n += 1
                     set_costs(new_costs, k)
                     set_cost_names(new_names, k)
-                    st.success(f"✓ Импортировано: {count} записей")
+                    parts = []
+                    if count_c: parts.append(f"{count_c} цен")
+                    if count_n: parts.append(f"{count_n} названий")
+                    st.success(f"✓ Импортировано: {', '.join(parts) or '0 записей'}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка: {e}")
