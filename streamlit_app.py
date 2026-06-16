@@ -1970,9 +1970,19 @@ def admin_panel():
         st.info("Нет одобренных пользователей.")
     else:
         for uname in list(approved.keys()):
-            c1, c2 = st.columns([5, 2])
+            c1, c2, c3 = st.columns([3, 4, 2])
             c1.write(f"**{uname}**")
-            if c2.button("🗑 Удалить", key=f"del_{uname}"):
+            new_comment = c2.text_input(
+                "Комментарий",
+                value=users[uname].get("comment", ""),
+                key=f"comment_{uname}",
+                label_visibility="collapsed",
+                placeholder="Комментарий...",
+            )
+            if new_comment != users[uname].get("comment", ""):
+                users[uname]["comment"] = new_comment
+                set_users(users)
+            if c3.button("🗑 Удалить", key=f"del_{uname}"):
                 del users[uname]
                 set_users(users)
                 st.rerun()
