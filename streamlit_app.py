@@ -118,6 +118,45 @@ def apply_theme(t: dict):
     }}
     /* ── Info / warning / success boxes ── */
     [data-testid="stAlert"] {{ background-color: {t['card']} !important; }}
+    /* ── Buttons (secondary / default) ── */
+    .stButton > button, .stDownloadButton > button {{
+        background-color: {t['card']} !important;
+        color: {t['text']} !important;
+        border-color: {t['border']} !important;
+    }}
+    .stButton > button:hover, .stDownloadButton > button:hover {{
+        background-color: {t['input_bg']} !important;
+        border-color: {t['primary']} !important;
+        color: {t['primary']} !important;
+    }}
+    /* primary buttons */
+    .stButton > button[kind="primary"],
+    [data-testid="stBaseButton-primary"] {{
+        background-color: {t['primary']} !important;
+        color: #ffffff !important;
+        border-color: {t['primary']} !important;
+    }}
+    .stButton > button[kind="primary"]:hover,
+    [data-testid="stBaseButton-primary"]:hover {{
+        filter: brightness(1.1);
+    }}
+    /* sidebar buttons */
+    [data-testid="stSidebar"] .stButton > button {{
+        background-color: {t['input_bg']} !important;
+        color: {t['text']} !important;
+        border-color: {t['border']} !important;
+    }}
+    /* ── Radio ── */
+    [data-testid="stRadio"] label {{ color: {t['text']} !important; }}
+    [data-testid="stRadio"] div[role="radiogroup"] label span {{
+        color: {t['text']} !important;
+    }}
+    /* ── Number input arrows ── */
+    [data-testid="stNumberInput"] button {{
+        background-color: {t['input_bg']} !important;
+        color: {t['text']} !important;
+        border-color: {t['border']} !important;
+    }}
     /* ── Mobile ── */
     @media (max-width: 768px) {{
         [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; }}
@@ -190,6 +229,22 @@ def get_history() -> dict:
 
 def _save_history():
     _write_json(HISTORY_FILE, _shared()["history"])
+
+def migrate_history_periods():
+    """Пересчитывает период из filename используя актуальный regex с названием месяца."""
+    hist = get_history()
+    changed = False
+    for kind in ("ozon", "ym"):
+        for entry in hist.get(kind, []):
+            filename = entry.get("filename", "")
+            if not filename:
+                continue
+            new_period = period_from_filename(filename)
+            if new_period and new_period != entry.get("period"):
+                entry["period"] = new_period
+                changed = True
+    if changed:
+        _save_history()
 
 # ══════════════════════════════════════════════════════════════════════════
 # ИСТОРИЯ ОТЧЁТОВ
@@ -1297,6 +1352,8 @@ st.set_page_config(
 
 # Применяем тему до любого контента
 apply_theme(get_theme())
+# Переводим старые числовые периоды в истории в формат с месяцем словом
+migrate_history_periods()
 
 # ── Сайдбар ───────────────────────────────────────────────────────────────
 st.sidebar.title("📊 Аналитика")
