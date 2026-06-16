@@ -1936,11 +1936,13 @@ def page_auth():
 
 @st.dialog("🔧 Панель разработчика", width="large")
 def admin_panel():
-    pw = st.text_input("Пароль администратора", type="password", key="adm_pw_input")
-    if pw != ADMIN_PASSWORD:
-        if pw:
-            st.error("Неверный пароль.")
-        st.stop()
+    is_admin = st.session_state.get("role") == "admin"
+    if not is_admin:
+        pw = st.text_input("Пароль администратора", type="password", key="adm_pw_input")
+        if pw != ADMIN_PASSWORD:
+            if pw:
+                st.error("Неверный пароль.")
+            st.stop()
 
     users = get_users()
     pending = {k: v for k, v in users.items() if v.get("status") == "pending"}
