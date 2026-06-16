@@ -430,17 +430,42 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
             qty=("Количество", "sum"), margin=("Рентабельность", "mean"),
             revenue=("Выручка", "sum"),
         ).reset_index()
-        grp = grp[grp["qty"] > 0]
+        grp = grp[grp["qty"] > 0].reset_index(drop=True)
         if not grp.empty:
             rev_max = grp["revenue"].max() or 1.0
             sizes   = (grp["revenue"] / rev_max * 40 + 6).clip(6, 46)
+
+            # Подписываем только выбросы — топ-3 по марже и топ-3 по продажам
+            label_idx = (set(grp.nlargest(3, "margin").index) |
+                         set(grp.nlargest(3, "qty").index))
+
+            def _short(name: str) -> str:
+                return name[:20] + "…" if len(name) > 20 else name
+
+            labels = [_short(str(row["Название товара"])) if i in label_idx else ""
+                      for i, row in grp.iterrows()]
+            hovers = [
+                f"<b>{row['Название товара']}</b><br>"
+                f"Продано: {int(row['qty'])} шт.<br>"
+                f"Рентабельность: {row['margin']:.1f}%<br>"
+                f"Выручка: {row['revenue']:,.0f} ₽"
+                for _, row in grp.iterrows()
+            ]
+
             fig.add_trace(go.Scatter(
                 x=grp["qty"].tolist(), y=grp["margin"].tolist(),
-                mode="markers+text", text=grp["Название товара"].tolist(),
+                mode="markers+text",
+                text=labels,
+                hovertext=hovers,
+                hoverinfo="text",
                 textposition="top center",
-                marker=dict(size=sizes.tolist(),
-                            color=[C_DANGER if m < 0 else C_PRIMARY for m in grp["margin"]],
-                            opacity=0.7),
+                textfont=dict(size=9, color="#E2E8F0"),
+                marker=dict(
+                    size=sizes.tolist(),
+                    color=[C_DANGER if m < 0 else C_PRIMARY for m in grp["margin"]],
+                    opacity=0.8,
+                    line=dict(color="rgba(255,255,255,0.25)", width=1),
+                ),
                 showlegend=False,
             ), row=2, col=2)
             x_min = grp["qty"].min() * 0.9
