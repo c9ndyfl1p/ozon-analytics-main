@@ -62,9 +62,11 @@ def apply_theme(t: dict):
     [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
         background-color: {t['card']} !important;
     }}
-    /* ── Text ── */
-    .stApp p, .stApp span, .stApp label, .stMarkdown,
-    .stApp div[data-testid="stText"] {{
+    /* ── Global text (cascades everywhere) ── */
+    .stApp, .stApp p, .stApp span:not([data-testid]),
+    .stApp label, .stMarkdown, .stText,
+    [data-testid="stText"], [data-testid="stMarkdownContainer"],
+    [data-testid="stCaptionContainer"] {{
         color: {t['text']};
     }}
     h1, h2, h3, h4, h5, h6 {{ color: {t['text']} !important; }}
@@ -73,7 +75,7 @@ def apply_theme(t: dict):
     [data-testid="stMetricValue"] {{ color: {t['text']} !important; }}
     [data-testid="stMetricLabel"] {{ color: {t['muted']} !important; }}
     /* ── Inputs ── */
-    input, textarea {{
+    input, textarea, [data-baseweb="input"] input {{
         background-color: {t['input_bg']} !important;
         color: {t['text']} !important;
         border-color: {t['border']} !important;
@@ -102,9 +104,14 @@ def apply_theme(t: dict):
     /* ── Divider ── */
     hr {{ border-color: {t['border']} !important; }}
     /* ── File uploader ── */
-    [data-testid="stFileUploader"] section {{
+    [data-testid="stFileUploader"] section,
+    [data-testid="stFileUploadDropzone"] {{
         background-color: {t['card']} !important;
         border-color: {t['border']} !important;
+    }}
+    [data-testid="stFileUploader"] span,
+    [data-testid="stFileUploader"] p {{
+        color: {t['text']} !important;
     }}
     /* ── Select / dropdown ── */
     [data-baseweb="select"] > div {{
@@ -118,7 +125,17 @@ def apply_theme(t: dict):
     }}
     /* ── Info / warning / success boxes ── */
     [data-testid="stAlert"] {{ background-color: {t['card']} !important; }}
-    /* ── Buttons (secondary / default) ── */
+    /* ── ALL buttons: universal fallback then specific overrides ── */
+    button {{
+        background-color: {t['card']} !important;
+        color: {t['text']} !important;
+        border: 1px solid {t['border']} !important;
+    }}
+    button:hover {{
+        border-color: {t['primary']} !important;
+        color: {t['primary']} !important;
+    }}
+    /* Streamlit wrapper-based selectors */
     .stButton > button, .stDownloadButton > button {{
         background-color: {t['card']} !important;
         color: {t['text']} !important;
@@ -129,22 +146,26 @@ def apply_theme(t: dict):
         border-color: {t['primary']} !important;
         color: {t['primary']} !important;
     }}
-    /* primary buttons */
-    .stButton > button[kind="primary"],
-    [data-testid="stBaseButton-primary"] {{
+    /* data-testid on the button element itself (no "st" prefix) */
+    button[data-testid="baseButton-secondary"] {{
+        background-color: {t['card']} !important;
+        color: {t['text']} !important;
+        border-color: {t['border']} !important;
+    }}
+    button[data-testid="baseButton-secondary"]:hover {{
+        border-color: {t['primary']} !important;
+        color: {t['primary']} !important;
+    }}
+    button[data-testid="baseButton-primary"],
+    .stButton > button[kind="primary"] {{
         background-color: {t['primary']} !important;
         color: #ffffff !important;
         border-color: {t['primary']} !important;
     }}
-    .stButton > button[kind="primary"]:hover,
-    [data-testid="stBaseButton-primary"]:hover {{
+    button[data-testid="baseButton-primary"]:hover,
+    .stButton > button[kind="primary"]:hover {{
         filter: brightness(1.1);
-    }}
-    /* sidebar buttons */
-    [data-testid="stSidebar"] .stButton > button {{
-        background-color: {t['input_bg']} !important;
-        color: {t['text']} !important;
-        border-color: {t['border']} !important;
+        color: #ffffff !important;
     }}
     /* ── Radio ── */
     [data-testid="stRadio"] label {{ color: {t['text']} !important; }}
@@ -290,9 +311,10 @@ def save_report_to_history(kind: str, filename: str, df_raw: pd.DataFrame, regul
     metrics = {}
     if not regular.empty:
         metrics = {
-            "revenue": round(float(regular["Выручка"].sum())  if "Выручка"    in regular.columns else 0, 0),
-            "profit":  round(float(regular["Прибыль"].sum())  if "Прибыль"    in regular.columns else 0, 0),
-            "orders":  int(regular["Количество"].sum()        if "Количество" in regular.columns else 0),
+            "revenue": round(float(regular["Выручка"].sum())        if "Выручка"        in regular.columns else 0, 0),
+            "profit":  round(float(regular["Прибыль"].sum())        if "Прибыль"        in regular.columns else 0, 0),
+            "orders":  int(regular["Количество"].sum()              if "Количество"     in regular.columns else 0),
+            "margin":  round(float(regular["Рентабельность"].mean()) if "Рентабельность" in regular.columns else 0, 1),
         }
 
     entry = {
@@ -779,19 +801,43 @@ def df_to_excel(df: pd.DataFrame, sheet: str = "Лист1") -> bytes:
 # UI — ОБЩИЕ КОМПОНЕНТЫ
 # ══════════════════════════════════════════════════════════════════════════
 
-def render_kpi(df: pd.DataFrame):
+def get_prev_metrics(kind: str, current_period: str) -> tuple[dict, str]:
+    """Returns (metrics_dict, period_label) from the most recent history entry != current_period."""
+    for entry in get_history().get(kind, []):
+        if entry.get("period") != current_period and entry.get("metrics"):
+            return entry["metrics"], entry.get("period", "")
+    return {}, ""
+
+def render_kpi(df: pd.DataFrame, kind: str = "", current_period: str = ""):
     rev    = df["Выручка"].sum()         if "Выручка"        in df.columns else 0
     profit = df["Прибыль"].sum()         if "Прибыль"        in df.columns else 0
     qty    = int(df["Количество"].sum()) if "Количество"     in df.columns else 0
     margin = df["Рентабельность"].mean() if "Рентабельность" in df.columns else 0
 
+    prev_m, _ = ({}, "")
+    if kind and current_period:
+        prev_m, _ = get_prev_metrics(kind, current_period)
+
+    def _d_rub(cur: float, key: str) -> str | None:
+        if key not in prev_m:
+            return None
+        return f"{cur - prev_m[key]:+,.0f} ₽"
+
+    def _d_pct(cur: float, key: str) -> str | None:
+        if key not in prev_m:
+            return None
+        return f"{cur - prev_m[key]:+.1f}%"
+
+    def _d_qty(cur: float, key: str) -> str | None:
+        if key not in prev_m:
+            return None
+        return f"{int(cur - prev_m[key]):+,} шт."
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Выручка",        f"{rev:,.0f} ₽")
-    c2.metric("Чистая прибыль", f"{profit:,.0f} ₽",
-              delta="▲" if profit >= 0 else "▼",
-              delta_color="normal" if profit >= 0 else "inverse")
-    c3.metric("Рентабельность", f"{margin:.1f}%")
-    c4.metric("Заказов",        f"{qty:,} шт.")
+    c1.metric("Выручка",        f"{rev:,.0f} ₽",   delta=_d_rub(rev, "revenue"))
+    c2.metric("Чистая прибыль", f"{profit:,.0f} ₽", delta=_d_rub(profit, "profit"))
+    c3.metric("Рентабельность", f"{margin:.1f}%",   delta=_d_pct(margin, "margin"))
+    c4.metric("Заказов",        f"{qty:,} шт.",     delta=_d_qty(qty, "orders"))
 
 def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление от ОЗОН", key_prefix: str = ""):
     grp = df.groupby("SKU", sort=False).agg(
@@ -974,7 +1020,7 @@ def page_ozon():
     if period:
         st.caption(f"📅 Период отчёта: **{period}**")
 
-    render_kpi(regular)
+    render_kpi(regular, kind="ozon", current_period=period)
     st.divider()
 
     tab1, tab2, tab3, tab4 = st.tabs(["📋 Начисления", "🔄 Возвраты", "📊 Графики", "💡 Рекомендации"])
@@ -1129,7 +1175,7 @@ def page_ym():
     if period:
         st.caption(f"📅 Период отчёта: **{period}**")
 
-    render_kpi(df)
+    render_kpi(df, kind="ym", current_period=period)
     st.divider()
 
     tab1, tab2, tab3 = st.tabs(["📋 Сводка по SKU", "📊 Графики", "💡 Рекомендации"])
