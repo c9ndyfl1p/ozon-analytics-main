@@ -6,5 +6,4 @@ build/
 dist/
 ozon_state.json
 ozon_costs.json
-costs_db.json
 перенос.csv
