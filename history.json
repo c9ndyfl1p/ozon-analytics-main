@@ -1,0 +1,57 @@
+{
+  "ozon": [
+    {
+      "id": "4297eb58",
+      "filename": "Отчет по начислениям_01.05.2026-31.05.2026 (4).xlsx",
+      "period": "1 мая 2026 — 31 мая 2026",
+      "uploaded_at": "16.06.2026 13:06",
+      "metrics": {
+        "revenue": 885361.0,
+        "profit": 290094.0,
+        "orders": 319,
+        "margin": 89.4
+      },
+      "parquet": "/mount/src/ozon-analytics-main/history/ozon_4297eb58.parquet"
+    },
+    {
+      "id": "2274cce8",
+      "filename": "Отчет по начислениям_01.06.2026-16.06.2026.xlsx",
+      "period": "1 июня 2026 — 16 июня 2026",
+      "uploaded_at": "16.06.2026 13:06",
+      "metrics": {
+        "revenue": 612279.0,
+        "profit": 179501.0,
+        "orders": 192,
+        "margin": 68.8
+      },
+      "parquet": "/mount/src/ozon-analytics-main/history/ozon_2274cce8.parquet"
+    },
+    {
+      "id": "8f4b4c92",
+      "filename": "Отчет по начислениям_01.04.2026-30.04.2026 (2).xlsx",
+      "period": "1 апреля 2026 — 30 апреля 2026",
+      "uploaded_at": "16.06.2026 13:06",
+      "metrics": {
+        "revenue": 738981.0,
+        "profit": 257290.0,
+        "orders": 301,
+        "margin": 98.6
+      },
+      "parquet": "/mount/src/ozon-analytics-main/history/ozon_8f4b4c92.parquet"
+    },
+    {
+      "id": "df4f7ddc",
+      "filename": "Отчет по начислениям_01.03.2026-31.03.2026 (1).xlsx",
+      "period": "1 марта 2026 — 31 марта 2026",
+      "uploaded_at": "16.06.2026 13:06",
+      "metrics": {
+        "revenue": 1588271.0,
+        "profit": 396924.0,
+        "orders": 635,
+        "margin": 75.7
+      },
+      "parquet": "/mount/src/ozon-analytics-main/history/ozon_df4f7ddc.parquet"
+    }
+  ],
+  "ym": []
+}
