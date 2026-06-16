@@ -93,7 +93,6 @@ def _save_history():
 # ══════════════════════════════════════════════════════════════════════════
 
 def _parse_date_from_str(s: str) -> datetime | None:
-    """Пробует несколько форматов, возвращает datetime или None."""
     s = s.replace("_", ".").replace("-", ".")
     for fmt in ("%d.%m.%Y", "%Y.%m.%d"):
         try:
@@ -102,30 +101,22 @@ def _parse_date_from_str(s: str) -> datetime | None:
             pass
     return None
 
-def detect_period(df: pd.DataFrame, filename: str = "") -> str:
-    # Сначала пробуем извлечь даты из имени файла
-    if filename:
-        # Ищем даты вида DD.MM.YYYY, DD-MM-YYYY, DD_MM_YYYY, YYYY-MM-DD и т.п.
-        tokens = re.findall(r"\d{2}[._-]\d{2}[._-]\d{4}|\d{4}[._-]\d{2}[._-]\d{2}", filename)
-        parsed = [d for t in tokens if (d := _parse_date_from_str(t)) is not None]
-        if len(parsed) >= 2:
-            parsed.sort()
-            return f"{parsed[0].strftime('%d.%m.%Y')} — {parsed[-1].strftime('%d.%m.%Y')}"
-        if len(parsed) == 1:
-            return parsed[0].strftime("%d.%m.%Y")
+def period_from_filename(filename: str) -> str:
+    """Извлекает период из имени файла. Возвращает пустую строку если не найдено."""
+    tokens = re.findall(r"\d{2}[._-]\d{2}[._-]\d{4}|\d{4}[._-]\d{2}[._-]\d{2}", filename)
+    parsed = [d for t in tokens if (d := _parse_date_from_str(t)) is not None]
+    if len(parsed) >= 2:
+        parsed.sort()
+        return f"{parsed[0].strftime('%d.%m.%Y')} — {parsed[-1].strftime('%d.%m.%Y')}"
+    if len(parsed) == 1:
+        return parsed[0].strftime("%d.%m.%Y")
+    return ""
 
-    # Фолбэк: min/max из колонки дат в данных
-    for col in ["Дата начисления", "Дата транзакции", "Дата"]:
-        if col in df.columns:
-            dates = pd.to_datetime(df[col], dayfirst=True, errors="coerce").dropna()
-            if not dates.empty:
-                return f"{dates.min().strftime('%d.%m.%Y')} — {dates.max().strftime('%d.%m.%Y')}"
-    return "Период не определён"
-
-def save_report_to_history(kind: str, filename: str, df_raw: pd.DataFrame, regular: pd.DataFrame) -> str:
+def save_report_to_history(kind: str, filename: str, df_raw: pd.DataFrame, regular: pd.DataFrame, period: str = "") -> str:
     """Сохраняет сырой DataFrame в parquet и добавляет запись в историю."""
     HISTORY_DIR.mkdir(exist_ok=True)
-    period  = detect_period(df_raw, filename)
+    if not period:
+        period = period_from_filename(filename)
     rec_id  = str(uuid.uuid4())[:8]
     parquet = HISTORY_DIR / f"{kind}_{rec_id}.parquet"
 
@@ -701,15 +692,17 @@ def render_history_sidebar(kind: str) -> dict | None:
 # СТРАНИЦЫ
 # ══════════════════════════════════════════════════════════════════════════
 
-def _load_ozon_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False):
+def _load_ozon_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False, period: str = ""):
     regular, returns = build_accrual_summary(df_raw)
-    period = detect_period(df_raw, filename)
-    st.session_state.ozon_df_raw = df_raw
-    st.session_state.ozon_regular = regular
-    st.session_state.ozon_returns = returns
-    st.session_state.ozon_period  = period
+    detected = period or period_from_filename(filename)
+    st.session_state.ozon_df_raw    = df_raw
+    st.session_state.ozon_regular   = regular
+    st.session_state.ozon_returns   = returns
+    st.session_state.ozon_period    = detected
+    st.session_state.ozon_need_period = (detected == "")
+    st.session_state.ozon_filename  = filename
     if not from_history:
-        save_report_to_history("ozon", filename, df_raw, regular)
+        save_report_to_history("ozon", filename, df_raw, regular, period=detected)
 
 def page_ozon():
     st.header("📊 OZON — Аналитика начислений")
@@ -742,6 +735,32 @@ def page_ozon():
     if "ozon_regular" not in st.session_state:
         st.info("Загрузите файл: **Финансы → Экономика магазина → Скачать отчёт по начислениям**")
         return
+
+    # Если период не удалось определить из имени файла — просим ввести вручную
+    if st.session_state.get("ozon_need_period"):
+        st.warning("Не удалось определить период из имени файла. Укажите его вручную:")
+        col_p, col_btn = st.columns([3, 1])
+        with col_p:
+            manual = st.text_input("Период (например: 01.05.2026 — 31.05.2026)",
+                                   key="ozon_period_input",
+                                   placeholder="01.05.2026 — 31.05.2026")
+        with col_btn:
+            st.write("")
+            st.write("")
+            if st.button("✓ Сохранить", key="ozon_period_save"):
+                if manual.strip():
+                    st.session_state.ozon_period      = manual.strip()
+                    st.session_state.ozon_need_period = False
+                    # Обновляем запись в истории с указанным периодом
+                    save_report_to_history(
+                        "ozon",
+                        st.session_state.get("ozon_filename", ""),
+                        st.session_state.ozon_df_raw,
+                        st.session_state.ozon_regular,
+                        period=manual.strip(),
+                    )
+                    st.rerun()
+        st.divider()
 
     period  = st.session_state.get("ozon_period", "")
     regular = st.session_state.ozon_regular
@@ -830,14 +849,16 @@ def page_ozon():
         render_recommendations(regular)
 
 
-def _load_ym_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False):
-    df     = build_ym_summary(df_raw)
-    period = detect_period(df_raw, filename)
-    st.session_state.ym_df_raw = df_raw
-    st.session_state.ym_df     = df
-    st.session_state.ym_period  = period
+def _load_ym_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False, period: str = ""):
+    df       = build_ym_summary(df_raw)
+    detected = period or period_from_filename(filename)
+    st.session_state.ym_df_raw      = df_raw
+    st.session_state.ym_df          = df
+    st.session_state.ym_period      = detected
+    st.session_state.ym_need_period = (detected == "")
+    st.session_state.ym_filename    = filename
     if not from_history and not df.empty:
-        save_report_to_history("ym", filename, df_raw, df)
+        save_report_to_history("ym", filename, df_raw, df, period=detected)
 
 def page_ym():
     st.header("🎯 Яндекс Маркет — Аналитика")
@@ -874,6 +895,30 @@ def page_ym():
     if df.empty:
         st.error("Не удалось загрузить данные. Проверьте формат файла.")
         return
+
+    if st.session_state.get("ym_need_period"):
+        st.warning("Не удалось определить период из имени файла. Укажите его вручную:")
+        col_p, col_btn = st.columns([3, 1])
+        with col_p:
+            manual = st.text_input("Период (например: 01.05.2026 — 31.05.2026)",
+                                   key="ym_period_input",
+                                   placeholder="01.05.2026 — 31.05.2026")
+        with col_btn:
+            st.write("")
+            st.write("")
+            if st.button("✓ Сохранить", key="ym_period_save"):
+                if manual.strip():
+                    st.session_state.ym_period      = manual.strip()
+                    st.session_state.ym_need_period = False
+                    save_report_to_history(
+                        "ym",
+                        st.session_state.get("ym_filename", ""),
+                        st.session_state.ym_df_raw,
+                        st.session_state.ym_df,
+                        period=manual.strip(),
+                    )
+                    st.rerun()
+        st.divider()
 
     period = st.session_state.get("ym_period", "")
     if period:
