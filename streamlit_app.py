@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import re
+import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +27,9 @@ USERS_FILE      = BASE_DIR / "users.json"
 
 ADMIN_LOGIN    = "admin"
 ADMIN_PASSWORD = "Allroad016"
+
+TELEGRAM_TOKEN   = "8683988833:AAEoq2pVkEZinD3QcsjRj1dRx9IT8x06nug"
+TELEGRAM_CHAT_ID = "730245954"
 
 # ── Константы ─────────────────────────────────────────────────────────────
 TARIFF_PER_L  = 1.9
@@ -307,6 +312,95 @@ def _ensure_admin():
             "role": "admin",
         }
         set_users(users)
+
+# ── Telegram helpers ──────────────────────────────────────────────────────
+
+def _tg_request(method: str, **kwargs):
+    try:
+        import requests as _req
+        _req.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}",
+            json=kwargs,
+            timeout=6,
+        )
+    except Exception:
+        pass
+
+def _tg_send(text: str, reply_markup: dict | None = None):
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    _tg_request("sendMessage", **payload)
+
+def _tg_notify_registration(username: str):
+    _tg_send(
+        f"🔔 <b>Новая заявка на регистрацию</b>\nПользователь: <code>{username}</code>",
+        reply_markup={
+            "inline_keyboard": [[
+                {"text": "✅ Одобрить", "callback_data": f"approve:{username}"},
+                {"text": "❌ Отклонить", "callback_data": f"reject:{username}"},
+            ]]
+        },
+    )
+
+@st.cache_resource
+def _start_tg_polling():
+    """Запускает фоновый поток long-polling для обработки кнопок бота."""
+    def _poll():
+        offset = None
+        while True:
+            try:
+                import requests as _req
+                params: dict = {"timeout": 30}
+                if offset is not None:
+                    params["offset"] = offset
+                resp = _req.get(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+                    params=params,
+                    timeout=35,
+                )
+                for update in resp.json().get("result", []):
+                    offset = update["update_id"] + 1
+                    cb = update.get("callback_query")
+                    if not cb:
+                        continue
+                    data      = cb.get("data", "")
+                    chat_id   = cb["message"]["chat"]["id"]
+                    msg_id    = cb["message"]["message_id"]
+                    cb_id     = cb["id"]
+                    _tg_request("answerCallbackQuery", callback_query_id=cb_id)
+                    if data.startswith("approve:"):
+                        uname = data[len("approve:"):]
+                        users = get_users()
+                        if uname in users and users[uname].get("status") == "pending":
+                            users[uname]["status"] = "approved"
+                            set_users(users)
+                            _tg_request("editMessageText",
+                                        chat_id=chat_id, message_id=msg_id,
+                                        text=f"✅ Пользователь <b>{uname}</b> одобрен.",
+                                        parse_mode="HTML")
+                        else:
+                            _tg_request("editMessageText",
+                                        chat_id=chat_id, message_id=msg_id,
+                                        text=f"⚠️ Пользователь <b>{uname}</b> не найден или уже обработан.",
+                                        parse_mode="HTML")
+                    elif data.startswith("reject:"):
+                        uname = data[len("reject:"):]
+                        users = get_users()
+                        if uname in users:
+                            del users[uname]
+                            set_users(users)
+                            _tg_request("editMessageText",
+                                        chat_id=chat_id, message_id=msg_id,
+                                        text=f"❌ Пользователь <b>{uname}</b> отклонён и удалён.",
+                                        parse_mode="HTML")
+            except Exception:
+                time.sleep(5)
+
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    return t
+
 
 def migrate_history_periods():
     """Пересчитывает период из filename используя актуальный regex с названием месяца."""
@@ -1834,6 +1928,7 @@ def page_auth():
                     "role": "user",
                 }
                 set_users(users)
+                _tg_notify_registration(new_login)
                 st.success("Заявка отправлена. Ожидайте одобрения администратора.")
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1895,6 +1990,8 @@ st.set_page_config(
 apply_theme(get_theme())
 # Убеждаемся что admin-аккаунт существует
 _ensure_admin()
+# Запускаем фоновый polling Telegram (один раз на весь процесс)
+_start_tg_polling()
 # Переводим старые числовые периоды в истории в формат с месяцем словом
 migrate_history_periods()
 
