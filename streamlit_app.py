@@ -3,6 +3,8 @@
 """
 import io
 import json
+import uuid
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -15,15 +17,16 @@ BASE_DIR     = Path(__file__).parent
 COSTS_FILE   = BASE_DIR / "costs_db.json"
 RETURNS_FILE = BASE_DIR / "returns_settings.json"
 STATE_FILE   = BASE_DIR / "ozon_state.json"
+HISTORY_FILE = BASE_DIR / "history.json"
+HISTORY_DIR  = BASE_DIR / "history"
 
-# ── Константы калькулятора ─────────────────────────────────────────────────
+# ── Константы ─────────────────────────────────────────────────────────────
 TARIFF_PER_L  = 1.9
 ACQUIRING_PCT = 1.5
 
 RETURN_TYPE_KEYS   = {"Бой товара": "бой", "Восстановление": "восстановление", "Возврат к продаже": "возврат"}
 RETURN_KEYS_LABELS = {"бой": "Бой товара", "восстановление": "Восстановление", "возврат": "Возврат к продаже"}
 
-# ── Цвета ─────────────────────────────────────────────────────────────────
 C_PRIMARY = "#3B82F6"
 C_SUCCESS = "#22C55E"
 C_DANGER  = "#EF4444"
@@ -33,36 +36,112 @@ C_BG      = "#0F172A"
 C_CARD    = "#1E293B"
 
 # ══════════════════════════════════════════════════════════════════════════
-# ХРАНИЛИЩЕ
+# ОБЩЕЕ СОСТОЯНИЕ (shared across all user sessions via cache_resource)
 # ══════════════════════════════════════════════════════════════════════════
 
-def load_costs() -> dict:
+def _read_json(path: Path, default=None):
     try:
-        with open(COSTS_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {}
+        return default if default is not None else {}
 
-def save_costs(costs: dict):
+def _write_json(path: Path, data):
     try:
-        with open(COSTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(costs, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-
-def load_return_settings() -> dict:
-    try:
-        with open(RETURNS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_return_settings(data: dict):
-    try:
-        with open(RETURNS_FILE, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+@st.cache_resource
+def _shared() -> dict:
+    """
+    Единый объект в памяти сервера, общий для всех сессий.
+    Инициализируется из файлов при старте приложения.
+    """
+    HISTORY_DIR.mkdir(exist_ok=True)
+    return {
+        "costs":           _read_json(COSTS_FILE, {}),
+        "return_settings": _read_json(RETURNS_FILE, {}),
+        "history":         _read_json(HISTORY_FILE, {"ozon": [], "ym": []}),
+    }
+
+# Обёртки для чтения/записи через shared state
+def get_costs() -> dict:
+    return _shared()["costs"]
+
+def set_costs(costs: dict):
+    _shared()["costs"] = costs
+    _write_json(COSTS_FILE, costs)
+
+def get_return_settings() -> dict:
+    return _shared()["return_settings"]
+
+def set_return_settings(data: dict):
+    _shared()["return_settings"] = data
+    _write_json(RETURNS_FILE, data)
+
+def get_history() -> dict:
+    return _shared()["history"]
+
+def _save_history():
+    _write_json(HISTORY_FILE, _shared()["history"])
+
+# ══════════════════════════════════════════════════════════════════════════
+# ИСТОРИЯ ОТЧЁТОВ
+# ══════════════════════════════════════════════════════════════════════════
+
+def detect_period(df: pd.DataFrame) -> str:
+    for col in ["Дата начисления", "Дата транзакции", "Дата"]:
+        if col in df.columns:
+            dates = pd.to_datetime(df[col], dayfirst=True, errors="coerce").dropna()
+            if not dates.empty:
+                return f"{dates.min().strftime('%d.%m.%Y')} — {dates.max().strftime('%d.%m.%Y')}"
+    return "Период не определён"
+
+def save_report_to_history(kind: str, filename: str, df_raw: pd.DataFrame, regular: pd.DataFrame) -> str:
+    """Сохраняет сырой DataFrame в parquet и добавляет запись в историю."""
+    HISTORY_DIR.mkdir(exist_ok=True)
+    period  = detect_period(df_raw)
+    rec_id  = str(uuid.uuid4())[:8]
+    parquet = HISTORY_DIR / f"{kind}_{rec_id}.parquet"
+
+    try:
+        df_raw.to_parquet(parquet, index=False)
+    except Exception:
+        return period
+
+    metrics = {}
+    if not regular.empty:
+        metrics = {
+            "revenue": round(float(regular["Выручка"].sum())  if "Выручка"    in regular.columns else 0, 0),
+            "profit":  round(float(regular["Прибыль"].sum())  if "Прибыль"    in regular.columns else 0, 0),
+            "orders":  int(regular["Количество"].sum()        if "Количество" in regular.columns else 0),
+        }
+
+    entry = {
+        "id":          rec_id,
+        "filename":    filename,
+        "period":      period,
+        "uploaded_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "metrics":     metrics,
+        "parquet":     str(parquet),
+    }
+
+    hist = get_history()
+    # Убираем дублирующийся период для этого типа
+    hist[kind] = [h for h in hist[kind] if h["period"] != period]
+    hist[kind].insert(0, entry)
+    hist[kind] = hist[kind][:20]          # храним последние 20
+    _save_history()
+    return period
+
+def load_report_from_history(entry: dict):
+    """Читает сохранённый parquet, возвращает DataFrame."""
+    path = Path(entry["parquet"])
+    if not path.exists():
+        return None
+    return pd.read_parquet(path)
 
 # ══════════════════════════════════════════════════════════════════════════
 # ПАРСЕРЫ
@@ -110,7 +189,7 @@ def parse_ym_excel(f) -> pd.DataFrame:
     return df
 
 # ══════════════════════════════════════════════════════════════════════════
-# БИЗНЕС-ЛОГИКА АНАЛИТИКИ
+# БИЗНЕС-ЛОГИКА
 # ══════════════════════════════════════════════════════════════════════════
 
 def build_accrual_summary(df: pd.DataFrame):
@@ -137,7 +216,7 @@ def build_accrual_summary(df: pd.DataFrame):
     ret_cols  = list(set(ret_r + ret_l + ret_other))
     exp_cols  = [c for c in ops if c not in rev_cols and c not in ret_cols]
 
-    skip = [c for c in ops if "эквайринг" in c.lower() or "дополнительная" in c.lower()]
+    skip     = [c for c in ops if "эквайринг" in c.lower() or "дополнительная" in c.lower()]
     non_skip = [c for c in ops if c not in skip]
     pivot["_acq_only"] = pivot[non_skip].abs().sum(axis=1) == 0 if non_skip else False
 
@@ -165,7 +244,7 @@ def build_accrual_summary(df: pd.DataFrame):
         on=id_col, how="left"
     )
 
-    costs_db = load_costs()
+    costs_db = get_costs()
     def get_cost(row):
         for key in [str(row.get("Артикул", "")).strip(), str(row.get("SKU", "")).strip()]:
             if key and key != "nan" and costs_db.get(key, 0) > 0:
@@ -177,7 +256,7 @@ def build_accrual_summary(df: pd.DataFrame):
         lambda r: int(r["_qty"]) if not bool(r.get("_acq_only", False)) else 0, axis=1
     )
 
-    ret_settings = load_return_settings()
+    ret_settings = get_return_settings()
     def calc_cost(row):
         if row.get("_is_return", False):
             s     = ret_settings.get(str(row[id_col]), {})
@@ -204,7 +283,7 @@ def build_accrual_summary(df: pd.DataFrame):
     return regular, returns
 
 def build_ym_summary(df_raw: pd.DataFrame) -> pd.DataFrame:
-    costs = load_costs()
+    costs = get_costs()
     def _find(*kws):
         return next((c for c in df_raw.columns if all(k.lower() in c.lower() for k in kws)), None)
 
@@ -212,7 +291,8 @@ def build_ym_summary(df_raw: pd.DataFrame) -> pd.DataFrame:
     name_col   = _find("название", "товар")
     amount_col = _find("сумма", "транзакц")
     date_col   = _find("дата", "транзакц")
-    order_col  = next((c for c in df_raw.columns if "номер заказа" in c.lower() and "наш" not in c.lower()), None)
+    order_col  = next((c for c in df_raw.columns
+                       if "номер заказа" in c.lower() and "наш" not in c.lower()), None)
 
     if not sku_col or not amount_col:
         raise ValueError("Не найдены колонки: Ваш SKU, Сумма транзакции")
@@ -269,7 +349,9 @@ def compute_insights(df: pd.DataFrame):
         net=("Поступление от ОЗОН", "sum"), cost=("Себестоимость", "sum"),
         profit=("Прибыль", "sum"),
     ).reset_index()
-    grp["margin"] = grp.apply(lambda r: (r["net"] / r["cost"] * 100 - 100) if r["cost"] > 0 else 0.0, axis=1)
+    grp["margin"] = grp.apply(
+        lambda r: (r["net"] / r["cost"] * 100 - 100) if r["cost"] > 0 else 0.0, axis=1
+    )
     mx = float(grp["qty"].max())
     if mx <= 0:
         return 0.0, pd.DataFrame()
@@ -304,7 +386,8 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
 
     # 2. Динамика
     if "Дата начисления" in df.columns and "Выручка" in df.columns:
-        by_d = df.groupby("Дата начисления")[["Выручка", "Прибыль"]].sum().reset_index().sort_values("Дата начисления")
+        by_d = (df.groupby("Дата начисления")[["Выручка", "Прибыль"]]
+                .sum().reset_index().sort_values("Дата начисления"))
         dates = by_d["Дата начисления"].astype(str).tolist()
         fig.add_trace(go.Bar(x=dates, y=by_d["Выручка"].tolist(),
                              name="Выручка", marker_color=C_SUCCESS, opacity=0.65), row=1, col=2)
@@ -336,7 +419,7 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
         grp = grp[grp["qty"] > 0]
         if not grp.empty:
             rev_max = grp["revenue"].max() or 1.0
-            sizes = (grp["revenue"] / rev_max * 40 + 6).clip(6, 46)
+            sizes   = (grp["revenue"] / rev_max * 40 + 6).clip(6, 46)
             fig.add_trace(go.Scatter(
                 x=grp["qty"].tolist(), y=grp["margin"].tolist(),
                 mode="markers+text", text=grp["Название товара"].tolist(),
@@ -346,7 +429,6 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
                             opacity=0.7),
                 showlegend=False,
             ), row=2, col=2)
-            # horizontal zero line — add_hline не работает в mixed-type subplots
             x_min = grp["qty"].min() * 0.9
             x_max = grp["qty"].max() * 1.1
             fig.add_trace(go.Scatter(
@@ -436,12 +518,14 @@ def calc_price_row(row, roi: float) -> dict:
     if cost <= 0:
         return {c: 0.0 for c in CALC_COLS}
     shipment = _f(row.get("volume")) * TARIFF_PER_L
-    fixed    = _f(row.get("sc"), 20) + _f(row.get("pvz"), 25) + _f(row.get("ret"), 15) + shipment + _f(row.get("logistics"))
+    fixed    = (_f(row.get("sc"), 20) + _f(row.get("pvz"), 25) + _f(row.get("ret"), 15)
+                + shipment + _f(row.get("logistics")))
     pct      = (_f(row.get("reward")) + ACQUIRING_PCT) / 100
     price    = (cost * (roi / 100 + 1) + fixed) / (1 - pct)
     acq      = price * ACQUIRING_PCT / 100
     rew      = price * _f(row.get("reward")) / 100
-    comm     = acq + _f(row.get("sc"), 20) + _f(row.get("pvz"), 25) + _f(row.get("ret"), 15) + shipment + _f(row.get("logistics")) + rew
+    comm     = (acq + _f(row.get("sc"), 20) + _f(row.get("pvz"), 25) + _f(row.get("ret"), 15)
+                + shipment + _f(row.get("logistics")) + rew)
     return {
         "reward_rub": round(rew, 2), "acquiring_rub": round(acq, 2),
         "commission": round(comm, 2), "price": round(price, 2),
@@ -489,12 +573,12 @@ def df_to_excel(df: pd.DataFrame, sheet: str = "Лист1") -> bytes:
     return buf.getvalue()
 
 # ══════════════════════════════════════════════════════════════════════════
-# UI — ОБЩИЕ ВСПОМОГАТЕЛЬНЫЕ
+# UI — ОБЩИЕ КОМПОНЕНТЫ
 # ══════════════════════════════════════════════════════════════════════════
 
 def render_kpi(df: pd.DataFrame):
-    rev    = df["Выручка"].sum()        if "Выручка"        in df.columns else 0
-    profit = df["Прибыль"].sum()        if "Прибыль"        in df.columns else 0
+    rev    = df["Выручка"].sum()         if "Выручка"        in df.columns else 0
+    profit = df["Прибыль"].sum()         if "Прибыль"        in df.columns else 0
     qty    = int(df["Количество"].sum()) if "Количество"     in df.columns else 0
     margin = df["Рентабельность"].mean() if "Рентабельность" in df.columns else 0
 
@@ -506,7 +590,7 @@ def render_kpi(df: pd.DataFrame):
     c3.metric("Рентабельность", f"{margin:.1f}%")
     c4.metric("Заказов",        f"{qty:,} шт.")
 
-def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление от ОЗОН"):
+def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление от ОЗОН", key_prefix: str = ""):
     grp = df.groupby("SKU", sort=False).agg(
         name  =("Название товара", "first"),
         qty   =("Количество",       "sum"),
@@ -522,7 +606,7 @@ def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление
     grp.columns = ["SKU", "Название товара", "Кол-во", "Выручка", "Расходы",
                    "Поступление", "Себестоимость", "Прибыль", "Рент., %"]
 
-    search = st.text_input("🔍 Поиск", key=f"search_{source_col}")
+    search = st.text_input("🔍 Поиск", key=f"{key_prefix}search_{source_col}")
     if search:
         mask = grp.apply(lambda r: search.lower() in str(r.values).lower(), axis=1)
         grp  = grp[mask]
@@ -531,16 +615,18 @@ def render_sku_table(df: pd.DataFrame, source_col: str = "Поступление
         grp.style.format({
             "Выручка": "{:,.2f}", "Расходы": "{:,.2f}", "Поступление": "{:,.2f}",
             "Себестоимость": "{:,.2f}", "Прибыль": "{:,.2f}", "Рент., %": "{:.1f}%",
-        }).map(lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0 else "color: #22C55E"
-               if isinstance(v, (int, float)) and v > 0 else "",
-               subset=["Прибыль", "Рент., %"]),
+        }).map(
+            lambda v: "color: #EF4444" if isinstance(v, (int, float)) and v < 0
+                      else "color: #22C55E" if isinstance(v, (int, float)) and v > 0 else "",
+            subset=["Прибыль", "Рент., %"]
+        ),
         use_container_width=True, hide_index=True,
     )
 
     st.download_button("📥 Скачать Excel", df_to_excel(grp, "Аналитика"),
                        "analytics.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       key=f"dl_{source_col}")
+                       key=f"{key_prefix}dl_{source_col}")
 
 def render_recommendations(df: pd.DataFrame):
     threshold, insights = compute_insights(df)
@@ -552,17 +638,69 @@ def render_recommendations(df: pd.DataFrame):
         with st.container(border=True):
             c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
             c1.markdown(f"**{r['name']}**  \n`SKU: {r['SKU']}`")
-            c2.metric("Продано",      f"{int(r['qty'])} шт.")
+            c2.metric("Продано",        f"{int(r['qty'])} шт.")
             c3.metric("Рентабельность", f"{r['margin']:.1f}%")
-            c4.metric("Прибыль",      f"{r['profit']:,.0f} ₽")
-            st.caption("🔥 Высокая маржа + слабые продажи — запустить в промо-акцию или снизить цену на 5-10%")
+            c4.metric("Прибыль",        f"{r['profit']:,.0f} ₽")
+            st.caption("🔥 Высокая маржа + слабые продажи — запустить промо или снизить цену на 5–10%")
+
+# ── Боковая панель истории ─────────────────────────────────────────────────
+
+def render_history_sidebar(kind: str) -> dict | None:
+    """
+    Показывает историю загрузок в боковой панели.
+    Возвращает запись истории, если пользователь нажал «Загрузить».
+    """
+    entries = get_history().get(kind, [])
+    if not entries:
+        return None
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**📁 История отчётов**")
+
+    selected = None
+    for e in entries:
+        m = e.get("metrics", {})
+        label = f"📅 {e['period']}"
+        caption = f"Загружен {e['uploaded_at']}"
+        if m:
+            caption += f" · Прибыль: {m.get('profit', 0):,.0f} ₽"
+
+        with st.sidebar.container(border=True):
+            st.markdown(f"**{label}**")
+            st.caption(caption)
+            st.caption(f"Файл: {e['filename']}")
+            if st.button("Открыть", key=f"hist_{kind}_{e['id']}"):
+                selected = e
+
+    return selected
 
 # ══════════════════════════════════════════════════════════════════════════
-# РАЗДЕЛЫ ПРИЛОЖЕНИЯ
+# СТРАНИЦЫ
 # ══════════════════════════════════════════════════════════════════════════
+
+def _load_ozon_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False):
+    regular, returns = build_accrual_summary(df_raw)
+    period = detect_period(df_raw)
+    st.session_state.ozon_df_raw = df_raw
+    st.session_state.ozon_regular = regular
+    st.session_state.ozon_returns = returns
+    st.session_state.ozon_period  = period
+    if not from_history:
+        save_report_to_history("ozon", filename, df_raw, regular)
 
 def page_ozon():
     st.header("📊 OZON — Аналитика начислений")
+
+    # История в сайдбаре
+    hist_entry = render_history_sidebar("ozon")
+    if hist_entry:
+        df_hist = load_report_from_history(hist_entry)
+        if df_hist is not None:
+            with st.spinner("Загрузка из истории..."):
+                _load_ozon_report(df_hist, hist_entry["filename"], from_history=True)
+            st.rerun()
+        else:
+            st.sidebar.error("Файл истории не найден")
 
     uploaded = st.file_uploader(
         "Загрузить отчёт по начислениям (.xlsx)",
@@ -570,22 +708,24 @@ def page_ozon():
         help="Финансы → Экономика магазина → Скачать отчёт по начислениям",
     )
 
-    if uploaded is None:
+    if uploaded is not None:
+        cache_key = f"ozon_{uploaded.name}_{uploaded.size}"
+        if st.session_state.get("ozon_cache_key") != cache_key:
+            with st.spinner("Обработка данных..."):
+                df_raw = parse_accrual_excel(uploaded)
+                _load_ozon_report(df_raw, uploaded.name)
+                st.session_state.ozon_cache_key = cache_key
+
+    if "ozon_regular" not in st.session_state:
         st.info("Загрузите файл: **Финансы → Экономика магазина → Скачать отчёт по начислениям**")
         return
 
-    cache_key = f"ozon_{uploaded.name}_{uploaded.size}"
-    if st.session_state.get("ozon_cache_key") != cache_key:
-        with st.spinner("Обработка данных..."):
-            df_raw           = parse_accrual_excel(uploaded)
-            regular, returns = build_accrual_summary(df_raw)
-            st.session_state.ozon_cache_key = cache_key
-            st.session_state.ozon_df_raw    = df_raw
-            st.session_state.ozon_regular   = regular
-            st.session_state.ozon_returns   = returns
-
+    period  = st.session_state.get("ozon_period", "")
     regular = st.session_state.ozon_regular
     returns = st.session_state.ozon_returns
+
+    if period:
+        st.caption(f"📅 Период отчёта: **{period}**")
 
     render_kpi(regular)
     st.divider()
@@ -593,13 +733,11 @@ def page_ozon():
     tab1, tab2, tab3, tab4 = st.tabs(["📋 Начисления", "🔄 Возвраты", "📊 Графики", "💡 Рекомендации"])
 
     with tab1:
-        render_sku_table(regular)
-
-        # Строка возвратов в итогах
+        render_sku_table(regular, key_prefix="ozon_")
         if returns is not None and not returns.empty:
             with st.expander(f"↩ Возвраты — {len(returns)} шт. (сводка)"):
                 ret_summary = {
-                    "Обратная логистика": returns["_ret_log_cost"].sum(),
+                    "Обратная логистика":  returns["_ret_log_cost"].sum(),
                     "Поступление от ОЗОН": returns["Поступление от ОЗОН"].sum(),
                     "Себестоимость":       returns["Себестоимость"].sum(),
                     "Прибыль/Убыток":      returns["Прибыль"].sum(),
@@ -611,48 +749,49 @@ def page_ozon():
             st.success("✅ Возвратов нет")
         else:
             st.subheader("Типы возвратов")
-            st.caption("Измените тип — нажмите «Сохранить» — данные пересчитаются")
+            st.caption("Измените тип → нажмите «Сохранить» → данные пересчитаются")
 
-            ret_settings = load_return_settings()
+            ret_settings = get_return_settings()
             rows = []
             for _, row in returns.iterrows():
                 aid  = str(row["ID начисления"])
                 s    = ret_settings.get(aid, {})
                 rkey = s.get("type", "возврат")
                 rows.append({
-                    "ID начисления": aid,
-                    "SKU":            str(row.get("SKU", "")),
-                    "Название товара": str(row.get("Название товара", ""))[:50],
-                    "Тип возврата":   RETURN_KEYS_LABELS.get(rkey, "Возврат к продаже"),
+                    "ID начисления":    aid,
+                    "SKU":              str(row.get("SKU", "")),
+                    "Название товара":  str(row.get("Название товара", ""))[:50],
+                    "Тип возврата":     RETURN_KEYS_LABELS.get(rkey, "Возврат к продаже"),
                     "Стоим. доработки": float(s.get("restoration_cost", 0.0)),
-                    "Себестоимость":  float(row.get("Себестоимость", 0.0)),
-                    "Прибыль":        float(row.get("Прибыль", 0.0)),
+                    "Себестоимость":    float(row.get("Себестоимость", 0.0)),
+                    "Прибыль":          float(row.get("Прибыль", 0.0)),
                 })
             ret_df = pd.DataFrame(rows)
 
             edited = st.data_editor(
                 ret_df,
                 column_config={
-                    "ID начисления":   st.column_config.TextColumn(disabled=True),
-                    "SKU":             st.column_config.TextColumn(disabled=True),
-                    "Название товара": st.column_config.TextColumn(disabled=True),
-                    "Тип возврата":    st.column_config.SelectboxColumn(
+                    "ID начисления":    st.column_config.TextColumn(disabled=True),
+                    "SKU":              st.column_config.TextColumn(disabled=True),
+                    "Название товара":  st.column_config.TextColumn(disabled=True),
+                    "Тип возврата":     st.column_config.SelectboxColumn(
                         options=list(RETURN_KEYS_LABELS.values())),
                     "Стоим. доработки": st.column_config.NumberColumn(format="%.2f", min_value=0.0),
-                    "Себестоимость":   st.column_config.NumberColumn(format="%.2f", disabled=True),
-                    "Прибыль":         st.column_config.NumberColumn(format="%.2f", disabled=True),
+                    "Себестоимость":    st.column_config.NumberColumn(format="%.2f", disabled=True),
+                    "Прибыль":          st.column_config.NumberColumn(format="%.2f", disabled=True),
                 },
                 hide_index=True, use_container_width=True,
             )
 
             if st.button("💾 Сохранить и пересчитать", type="primary"):
+                new_settings = dict(ret_settings)
                 for _, row in edited.iterrows():
                     aid  = row["ID начисления"]
                     rkey = RETURN_TYPE_KEYS.get(row["Тип возврата"], "возврат")
-                    ret_settings[aid] = {"type": rkey}
+                    new_settings[aid] = {"type": rkey}
                     if rkey == "восстановление":
-                        ret_settings[aid]["restoration_cost"] = float(row["Стоим. доработки"])
-                save_return_settings(ret_settings)
+                        new_settings[aid]["restoration_cost"] = float(row["Стоим. доработки"])
+                set_return_settings(new_settings)
                 regular_new, returns_new = build_accrual_summary(st.session_state.ozon_df_raw)
                 st.session_state.ozon_regular = regular_new
                 st.session_state.ozon_returns = returns_new
@@ -668,8 +807,27 @@ def page_ozon():
         render_recommendations(regular)
 
 
+def _load_ym_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False):
+    df     = build_ym_summary(df_raw)
+    period = detect_period(df_raw)
+    st.session_state.ym_df_raw = df_raw
+    st.session_state.ym_df     = df
+    st.session_state.ym_period  = period
+    if not from_history and not df.empty:
+        save_report_to_history("ym", filename, df_raw, df)
+
 def page_ym():
     st.header("🎯 Яндекс Маркет — Аналитика")
+
+    hist_entry = render_history_sidebar("ym")
+    if hist_entry:
+        df_hist = load_report_from_history(hist_entry)
+        if df_hist is not None:
+            with st.spinner("Загрузка из истории..."):
+                _load_ym_report(df_hist, hist_entry["filename"], from_history=True)
+            st.rerun()
+        else:
+            st.sidebar.error("Файл истории не найден")
 
     uploaded = st.file_uploader(
         "Загрузить отчёт о платежах (.xlsx)",
@@ -677,22 +835,26 @@ def page_ym():
         help="Финансы → Финансовые отчёты → О платежах за период",
     )
 
-    if uploaded is None:
+    if uploaded is not None:
+        cache_key = f"ym_{uploaded.name}_{uploaded.size}"
+        if st.session_state.get("ym_cache_key") != cache_key:
+            with st.spinner("Обработка данных..."):
+                df_raw = parse_ym_excel(uploaded)
+                _load_ym_report(df_raw, uploaded.name)
+                st.session_state.ym_cache_key = cache_key
+
+    if "ym_df" not in st.session_state:
         st.info("Загрузите файл: **Финансы → Финансовые отчёты → О платежах за период**")
         return
-
-    cache_key = f"ym_{uploaded.name}_{uploaded.size}"
-    if st.session_state.get("ym_cache_key") != cache_key:
-        with st.spinner("Обработка данных..."):
-            df_raw = parse_ym_excel(uploaded)
-            df     = build_ym_summary(df_raw)
-            st.session_state.ym_cache_key = cache_key
-            st.session_state.ym_df        = df
 
     df = st.session_state.ym_df
     if df.empty:
         st.error("Не удалось загрузить данные. Проверьте формат файла.")
         return
+
+    period = st.session_state.get("ym_period", "")
+    if period:
+        st.caption(f"📅 Период отчёта: **{period}**")
 
     render_kpi(df)
     st.divider()
@@ -700,7 +862,7 @@ def page_ym():
     tab1, tab2, tab3 = st.tabs(["📋 Сводка по SKU", "📊 Графики", "💡 Рекомендации"])
 
     with tab1:
-        render_sku_table(df, source_col="Поступление от ОЗОН")
+        render_sku_table(df, source_col="Поступление от ОЗОН", key_prefix="ym_")
 
     with tab2:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"],
@@ -714,9 +876,9 @@ def page_ym():
 
 def page_costs():
     st.header("💰 База себестоимости")
-    st.caption("Используется при расчёте прибыли во всех разделах аналитики")
+    st.caption("Общая для всех пользователей — изменения видны сразу у всех")
 
-    costs = load_costs()
+    costs = get_costs()
 
     col_form, col_table = st.columns([1, 2])
 
@@ -727,8 +889,9 @@ def page_costs():
             cost = st.number_input("Себестоимость, руб.", min_value=0.0, step=100.0)
             if st.button("💾 Сохранить", type="primary", use_container_width=True):
                 if sku.strip():
+                    costs = dict(get_costs())
                     costs[sku.strip()] = cost
-                    save_costs(costs)
+                    set_costs(costs)
                     st.success(f"✓ {sku} = {cost:.2f} руб.")
                     st.rerun()
 
@@ -738,8 +901,8 @@ def page_costs():
             imp = st.file_uploader("Выбрать файл", type=["xlsx", "xls", "csv"])
             if imp:
                 try:
-                    df_imp = pd.read_csv(imp, dtype=str) if imp.name.endswith(".csv") \
-                             else pd.read_excel(imp, dtype=str)
+                    df_imp = (pd.read_csv(imp, dtype=str) if imp.name.endswith(".csv")
+                              else pd.read_excel(imp, dtype=str))
                     df_imp.columns = [str(c).strip().lower() for c in df_imp.columns]
                     ozon_col = next((c for c in df_imp.columns if "ozon" in c), None)
                     ym_col   = next((c for c in df_imp.columns if "яндекс" in c), None)
@@ -751,9 +914,11 @@ def page_costs():
                     if not cost_col:
                         cost_col = df_imp.columns[1] if len(df_imp.columns) > 1 else df_imp.columns[0]
                     sku_cols = [c for c in [ozon_col, ym_col] if c]
+                    new_costs = dict(get_costs())
                     count = 0
                     for _, row in df_imp.iterrows():
-                        cs = str(row.get(cost_col, "")).replace("₽","").replace("\xa0","").replace(" ","").replace(",",".")
+                        cs = (str(row.get(cost_col, "")).replace("₽", "")
+                              .replace("\xa0", "").replace(" ", "").replace(",", "."))
                         try:
                             cv = float(cs)
                         except ValueError:
@@ -761,9 +926,9 @@ def page_costs():
                         for col in sku_cols:
                             sv = str(row.get(col, "")).strip()
                             if sv and sv.lower() != "nan":
-                                costs[sv] = cv
+                                new_costs[sv] = cv
                                 count += 1
-                    save_costs(costs)
+                    set_costs(new_costs)
                     st.success(f"✓ Импортировано: {count} артикулов")
                     st.rerun()
                 except Exception as e:
@@ -773,15 +938,17 @@ def page_costs():
             st.subheader("Удалить")
             del_sku = st.text_input("SKU для удаления")
             if st.button("🗑️ Удалить", type="secondary", use_container_width=True):
-                if del_sku in costs:
-                    del costs[del_sku]
-                    save_costs(costs)
+                cur = dict(get_costs())
+                if del_sku in cur:
+                    del cur[del_sku]
+                    set_costs(cur)
                     st.success(f"✓ Удалено: {del_sku}")
                     st.rerun()
                 else:
                     st.warning("SKU не найден")
 
     with col_table:
+        costs = get_costs()
         st.subheader(f"Текущая база ({len(costs)} записей)")
         if costs:
             df_costs = pd.DataFrame(list(costs.items()), columns=["Артикул / SKU", "Себестоимость, руб."])
