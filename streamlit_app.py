@@ -347,25 +347,31 @@ def _github_commit_files():
             return
         headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
         base_url = f"https://api.github.com/repos/{GITHUB_REPO}/contents"
-        changed = []
-        for fname in _DATA_FILES:
-            fpath = BASE_DIR / fname
-            if not fpath.exists():
-                continue
+
+        def _push(rel_path: str, fpath: Path):
             content_b64 = base64.b64encode(fpath.read_bytes()).decode()
-            resp = _req.get(f"{base_url}/{fname}", headers=headers, timeout=10)
+            resp = _req.get(f"{base_url}/{rel_path}", headers=headers, timeout=10)
             sha = resp.json().get("sha") if resp.ok else None
-            # Пропускаем если содержимое не изменилось
-            if sha and resp.ok:
+            if sha:
                 remote_b64 = resp.json().get("content", "").replace("\n", "")
                 if remote_b64 == content_b64:
-                    continue
-            payload = {"message": f"autosave: {fname}", "content": content_b64}
+                    return
+            payload = {"message": f"autosave: {rel_path}", "content": content_b64}
             if sha:
                 payload["sha"] = sha
-            r = _req.put(f"{base_url}/{fname}", json=payload, headers=headers, timeout=10)
-            if r.ok:
-                changed.append(fname)
+            _req.put(f"{base_url}/{rel_path}", json=payload, headers=headers, timeout=15)
+
+        # Основные файлы данных
+        for fname in _DATA_FILES:
+            fpath = BASE_DIR / fname
+            if fpath.exists():
+                _push(fname, fpath)
+
+        # Последние 5 отчётов из history/
+        if HISTORY_DIR.exists():
+            parquets = sorted(HISTORY_DIR.glob("*.parquet"), key=lambda p: p.stat().st_mtime)
+            for pf in parquets[-5:]:
+                _push(f"history/{pf.name}", pf)
     except Exception:
         pass
 
