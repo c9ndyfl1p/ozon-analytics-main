@@ -28,13 +28,116 @@ ACQUIRING_PCT = 1.5
 RETURN_TYPE_KEYS   = {"Бой товара": "бой", "Восстановление": "восстановление", "Возврат к продаже": "возврат"}
 RETURN_KEYS_LABELS = {"бой": "Бой товара", "восстановление": "Восстановление", "возврат": "Возврат к продаже"}
 
-C_PRIMARY = "#3B82F6"
-C_SUCCESS = "#22C55E"
-C_DANGER  = "#EF4444"
-C_WARNING = "#F59E0B"
-C_MUTED   = "#94A3B8"
-C_BG      = "#0F172A"
-C_CARD    = "#1E293B"
+MONTHS_RU = {
+    1: "января", 2: "февраля", 3: "марта",    4: "апреля",
+    5: "мая",    6: "июня",    7: "июля",      8: "августа",
+    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря",
+}
+
+# ── Темы ──────────────────────────────────────────────────────────────────
+DARK_THEME = dict(
+    name="dark",
+    bg="#0F172A",    card="#1E293B",   text="#E2E8F0",  muted="#94A3B8",
+    primary="#3B82F6", success="#22C55E", danger="#EF4444", warning="#F59E0B",
+    border="#334155", input_bg="#0F172A",
+)
+LIGHT_THEME = dict(
+    name="light",
+    bg="#F8FAFC",    card="#FFFFFF",   text="#0F172A",  muted="#64748B",
+    primary="#2563EB", success="#15803D", danger="#DC2626", warning="#B45309",
+    border="#E2E8F0", input_bg="#F1F5F9",
+)
+
+def get_theme() -> dict:
+    return LIGHT_THEME if st.session_state.get("theme") == "light" else DARK_THEME
+
+def apply_theme(t: dict):
+    st.markdown(f"""<style>
+    /* ── Base ── */
+    .stApp, [data-testid="stMain"], [data-testid="stMainBlockContainer"],
+    [data-testid="stHeader"], [data-testid="stBottom"] {{
+        background-color: {t['bg']} !important;
+    }}
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
+        background-color: {t['card']} !important;
+    }}
+    /* ── Text ── */
+    .stApp p, .stApp span, .stApp label, .stMarkdown,
+    .stApp div[data-testid="stText"] {{
+        color: {t['text']};
+    }}
+    h1, h2, h3, h4, h5, h6 {{ color: {t['text']} !important; }}
+    .stCaption {{ color: {t['muted']} !important; }}
+    /* ── Metrics ── */
+    [data-testid="stMetricValue"] {{ color: {t['text']} !important; }}
+    [data-testid="stMetricLabel"] {{ color: {t['muted']} !important; }}
+    /* ── Inputs ── */
+    input, textarea {{
+        background-color: {t['input_bg']} !important;
+        color: {t['text']} !important;
+        border-color: {t['border']} !important;
+    }}
+    /* ── Containers ── */
+    [data-testid="stVerticalBlockBorderWrapper"] {{
+        background-color: {t['card']} !important;
+        border-color: {t['border']} !important;
+    }}
+    [data-testid="stExpander"] details {{
+        background-color: {t['card']} !important;
+        border-color: {t['border']} !important;
+    }}
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab-list"] {{
+        background-color: transparent !important;
+        border-bottom: 1px solid {t['border']} !important;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }}
+    .stTabs [data-baseweb="tab"] {{ color: {t['muted']} !important; }}
+    .stTabs [aria-selected="true"] {{
+        color: {t['primary']} !important;
+        border-bottom-color: {t['primary']} !important;
+    }}
+    /* ── Divider ── */
+    hr {{ border-color: {t['border']} !important; }}
+    /* ── File uploader ── */
+    [data-testid="stFileUploader"] section {{
+        background-color: {t['card']} !important;
+        border-color: {t['border']} !important;
+    }}
+    /* ── Select / dropdown ── */
+    [data-baseweb="select"] > div {{
+        background-color: {t['input_bg']} !important;
+        border-color: {t['border']} !important;
+        color: {t['text']} !important;
+    }}
+    [data-baseweb="popover"] ul {{
+        background-color: {t['card']} !important;
+        color: {t['text']} !important;
+    }}
+    /* ── Info / warning / success boxes ── */
+    [data-testid="stAlert"] {{ background-color: {t['card']} !important; }}
+    /* ── Mobile ── */
+    @media (max-width: 768px) {{
+        [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; }}
+        [data-testid="column"] {{ min-width: min(100%, 280px) !important; }}
+        [data-testid="stMetricValue"] {{ font-size: 1.1rem !important; }}
+        h1 {{ font-size: 1.4rem !important; }}
+        h2 {{ font-size: 1.2rem !important; }}
+        [data-testid="stPlotlyChart"] {{ overflow-x: auto; }}
+        [data-testid="stSidebar"] {{ min-width: 0 !important; }}
+    }}
+    </style>""", unsafe_allow_html=True)
+
+# Сокращения цветов (используются в коде ниже)
+C_PRIMARY = DARK_THEME["primary"]
+C_SUCCESS = DARK_THEME["success"]
+C_DANGER  = DARK_THEME["danger"]
+C_WARNING = DARK_THEME["warning"]
+C_MUTED   = DARK_THEME["muted"]
+C_BG      = DARK_THEME["bg"]
+C_CARD    = DARK_THEME["card"]
 
 # ══════════════════════════════════════════════════════════════════════════
 # ОБЩЕЕ СОСТОЯНИЕ (shared across all user sessions via cache_resource)
@@ -101,6 +204,9 @@ def _parse_date_from_str(s: str) -> datetime | None:
             pass
     return None
 
+def _fmt_date(dt: datetime) -> str:
+    return f"{dt.day} {MONTHS_RU[dt.month]} {dt.year}"
+
 def period_from_filename(filename: str) -> str:
     """Извлекает период из имени файла. Возвращает пустую строку если не найдено."""
     # Год ограничен 19xx/20xx чтобы не ловить случайные числа типа 8206235
@@ -108,9 +214,9 @@ def period_from_filename(filename: str) -> str:
     parsed = [d for t in tokens if (d := _parse_date_from_str(t)) is not None]
     if len(parsed) >= 2:
         parsed.sort()
-        return f"{parsed[0].strftime('%d.%m.%Y')} — {parsed[-1].strftime('%d.%m.%Y')}"
+        return f"{_fmt_date(parsed[0])} — {_fmt_date(parsed[-1])}"
     if len(parsed) == 1:
-        return parsed[0].strftime("%d.%m.%Y")
+        return _fmt_date(parsed[0])
     return ""
 
 def save_report_to_history(kind: str, filename: str, df_raw: pd.DataFrame, regular: pd.DataFrame, period: str = "") -> str:
@@ -378,7 +484,9 @@ def compute_insights(df: pd.DataFrame):
 # ГРАФИКИ
 # ══════════════════════════════════════════════════════════════════════════
 
-def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") -> go.Figure:
+def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль",
+                          theme: dict | None = None) -> go.Figure:
+    t = theme or get_theme()
     fig = make_subplots(
         rows=2, cols=2,
         subplot_titles=["Топ товаров", "Динамика выручки и прибыли",
@@ -392,7 +500,7 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
     mcol = {"Прибыль": "Прибыль", "Выручка": "Выручка", "Продано": "Количество"}.get(top_metric, "Прибыль")
     if "Название товара" in df.columns and mcol in df.columns:
         top = df.groupby("Название товара")[mcol].sum().sort_values().tail(10)
-        colors = [C_DANGER if v < 0 else C_PRIMARY for v in top.values]
+        colors = [t["danger"] if v < 0 else t["primary"] for v in top.values]
         fig.add_trace(go.Bar(
             y=top.index.tolist(), x=top.values.tolist(), orientation="h",
             marker_color=colors, showlegend=False,
@@ -405,9 +513,9 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
                 .sum().reset_index().sort_values("Дата начисления"))
         dates = by_d["Дата начисления"].astype(str).tolist()
         fig.add_trace(go.Bar(x=dates, y=by_d["Выручка"].tolist(),
-                             name="Выручка", marker_color=C_SUCCESS, opacity=0.65), row=1, col=2)
+                             name="Выручка", marker_color=t["success"], opacity=0.65), row=1, col=2)
         fig.add_trace(go.Scatter(x=dates, y=by_d["Прибыль"].tolist(),
-                                 name="Прибыль", line=dict(color=C_WARNING, width=2),
+                                 name="Прибыль", line=dict(color=t["warning"], width=2),
                                  mode="lines+markers"), row=1, col=2)
 
     # 3. Пирог
@@ -419,7 +527,7 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
             rest = bp.iloc[5:].sum()
             if rest > 0:
                 top5 = pd.concat([top5, pd.Series({"Остальные": rest})])
-            palette = [C_PRIMARY, "#A855F7", "#EAB308", C_SUCCESS, "#F97316", C_MUTED]
+            palette = [t["primary"], "#A855F7", "#EAB308", t["success"], "#F97316", t["muted"]]
             fig.add_trace(go.Pie(
                 labels=top5.index.tolist(), values=top5.values.tolist(),
                 hole=0.55, marker_colors=palette[:len(top5)], showlegend=True,
@@ -460,12 +568,12 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
                 hovertext=hovers,
                 hoverinfo="text",
                 textposition="top center",
-                textfont=dict(size=9, color="#E2E8F0"),
+                textfont=dict(size=9, color=t["text"]),
                 marker=dict(
                     size=sizes.tolist(),
-                    color=[C_DANGER if m < 0 else C_PRIMARY for m in grp["margin"]],
+                    color=[t["danger"] if m < 0 else t["primary"] for m in grp["margin"]],
                     opacity=0.8,
-                    line=dict(color="rgba(255,255,255,0.25)", width=1),
+                    line=dict(color="rgba(128,128,128,0.3)", width=1),
                 ),
                 showlegend=False,
             ), row=2, col=2)
@@ -473,18 +581,18 @@ def make_analytics_charts(df: pd.DataFrame, top_metric: str = "Прибыль") 
             x_max = grp["qty"].max() * 1.1
             fig.add_trace(go.Scatter(
                 x=[x_min, x_max], y=[0, 0],
-                mode="lines", line=dict(color=C_MUTED, dash="dot", width=1),
+                mode="lines", line=dict(color=t["muted"], dash="dot", width=1),
                 showlegend=False,
             ), row=2, col=2)
 
     fig.update_layout(
-        paper_bgcolor=C_BG, plot_bgcolor=C_CARD,
-        font=dict(color="#E2E8F0", size=11), height=680,
+        paper_bgcolor=t["bg"], plot_bgcolor=t["card"],
+        font=dict(color=t["text"], size=11), height=680,
         margin=dict(l=10, r=10, t=60, b=10),
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=t["text"])),
     )
     for ann in fig.layout.annotations:
-        ann.font.color = C_MUTED
+        ann.font.color = t["muted"]
         ann.font.size  = 12
     return fig
 
@@ -884,7 +992,7 @@ def page_ozon():
 
     with tab3:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"], horizontal=True)
-        st.plotly_chart(make_analytics_charts(regular, metric), use_container_width=True)
+        st.plotly_chart(make_analytics_charts(regular, metric, get_theme()), use_container_width=True)
 
     with tab4:
         st.subheader("💡 Умные рекомендации")
@@ -977,7 +1085,7 @@ def page_ym():
     with tab2:
         metric = st.radio("Топ товаров по:", ["Прибыль", "Выручка", "Продано"],
                           horizontal=True, key="ym_metric")
-        st.plotly_chart(make_analytics_charts(df, metric), use_container_width=True)
+        st.plotly_chart(make_analytics_charts(df, metric, get_theme()), use_container_width=True)
 
     with tab3:
         st.subheader("💡 Умные рекомендации")
@@ -1187,13 +1295,26 @@ st.set_page_config(
     layout="wide",
 )
 
+# Применяем тему до любого контента
+apply_theme(get_theme())
+
+# ── Сайдбар ───────────────────────────────────────────────────────────────
 st.sidebar.title("📊 Аналитика")
+
 page = st.sidebar.radio(
     "Раздел",
     ["📊 OZON Аналитика", "🎯 Яндекс Маркет", "💰 Себестоимость", "🛒 Калькулятор цен"],
     label_visibility="collapsed",
 )
 
+st.sidebar.markdown("---")
+is_dark = st.session_state.get("theme", "dark") == "dark"
+if st.sidebar.button("☀️ Светлая тема" if is_dark else "🌙 Тёмная тема",
+                     use_container_width=True):
+    st.session_state.theme = "light" if is_dark else "dark"
+    st.rerun()
+
+# ── Страницы ──────────────────────────────────────────────────────────────
 if page == "📊 OZON Аналитика":
     page_ozon()
 elif page == "🎯 Яндекс Маркет":
