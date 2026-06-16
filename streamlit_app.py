@@ -84,17 +84,43 @@ def apply_theme(t: dict):
         border-color: {t['border']} !important;
     }}
     /* ── Tabs ── */
+    /* ── Chrome-style tabs ── */
     .stTabs [data-baseweb="tab-list"] {{
+        gap: 3px !important;
         background-color: transparent !important;
-        border-bottom: 1px solid {t['border']} !important;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
+        border-bottom: 2px solid {t['border']} !important;
+        padding: 0 4px !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        align-items: flex-end !important;
     }}
-    .stTabs [data-baseweb="tab"] {{ color: {t['muted']} !important; }}
+    .stTabs [data-baseweb="tab"] {{
+        background-color: rgba(255,255,255,0.04) !important;
+        color: {t['muted']} !important;
+        border-radius: 9px 9px 0 0 !important;
+        border: 1px solid transparent !important;
+        border-bottom: none !important;
+        padding: 7px 18px 8px !important;
+        margin-bottom: -2px !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        white-space: nowrap !important;
+        transition: background-color 0.12s ease, color 0.12s ease !important;
+        min-height: 36px !important;
+    }}
+    .stTabs [data-baseweb="tab"]:hover {{
+        background-color: rgba(255,255,255,0.09) !important;
+        color: {t['text']} !important;
+        border-color: {t['border']} !important;
+    }}
     .stTabs [aria-selected="true"] {{
-        color: {t['primary']} !important;
-        border-bottom-color: {t['primary']} !important;
+        background-color: {t['card']} !important;
+        color: {t['text']} !important;
+        border: 1px solid {t['border']} !important;
+        border-bottom: 2px solid {t['card']} !important;
+        font-weight: 600 !important;
     }}
+    .stTabs [data-baseweb="tab-highlight"] {{ display: none !important; }}
     /* ── Divider ── */
     hr {{ border-color: {t['border']} !important; }}
     /* ── File uploader ── */
@@ -928,11 +954,40 @@ def df_to_excel(df: pd.DataFrame, sheet: str = "Лист1") -> bytes:
 # UI — ОБЩИЕ КОМПОНЕНТЫ
 # ══════════════════════════════════════════════════════════════════════════
 
+def _parse_period_start(period: str) -> datetime | None:
+    """Разбирает начальную дату из строки '1 мая 2026 — 31 мая 2026'."""
+    try:
+        part = period.split("—")[0].strip().split()
+        if len(part) < 3:
+            return None
+        day  = int(part[0])
+        mon  = next((k for k, v in MONTHS_RU.items() if v == part[1].lower()), None)
+        year = int(part[2])
+        if mon is None:
+            return None
+        return datetime(year, mon, day)
+    except Exception:
+        return None
+
 def get_prev_metrics(kind: str, current_period: str) -> tuple[dict, str]:
-    """Returns (metrics_dict, period_label) from the most recent history entry != current_period."""
+    """Returns metrics from the most recent history entry strictly before current_period."""
+    cur_start = _parse_period_start(current_period)
+    best_entry: dict | None = None
+    best_start: datetime | None = None
     for entry in get_history().get(kind, []):
-        if entry.get("period") != current_period and entry.get("metrics"):
-            return entry["metrics"], entry.get("period", "")
+        ep = entry.get("period", "")
+        if ep == current_period or not entry.get("metrics"):
+            continue
+        ep_start = _parse_period_start(ep)
+        if ep_start is None:
+            continue
+        if cur_start is not None and ep_start >= cur_start:
+            continue   # будущие периоды не берём
+        if best_start is None or ep_start > best_start:
+            best_start = ep_start
+            best_entry = entry
+    if best_entry:
+        return best_entry["metrics"], best_entry.get("period", "")
     return {}, ""
 
 def render_kpi(df: pd.DataFrame, kind: str = "", current_period: str = ""):
