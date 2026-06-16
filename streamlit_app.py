@@ -1737,7 +1737,7 @@ page = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
-with st.sidebar.expander("📖 Гайд по приложению"):
+with st.sidebar.expander("📖 Инструкция по использованию"):
     st.markdown("""
 **📊 OZON Аналитика**
 Загрузите: *Финансы → Экономика магазина → Скачать отчёт по начислениям*
