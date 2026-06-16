@@ -3,6 +3,7 @@
 """
 import io
 import json
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -91,7 +92,29 @@ def _save_history():
 # ИСТОРИЯ ОТЧЁТОВ
 # ══════════════════════════════════════════════════════════════════════════
 
-def detect_period(df: pd.DataFrame) -> str:
+def _parse_date_from_str(s: str) -> datetime | None:
+    """Пробует несколько форматов, возвращает datetime или None."""
+    s = s.replace("_", ".").replace("-", ".")
+    for fmt in ("%d.%m.%Y", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
+def detect_period(df: pd.DataFrame, filename: str = "") -> str:
+    # Сначала пробуем извлечь даты из имени файла
+    if filename:
+        # Ищем даты вида DD.MM.YYYY, DD-MM-YYYY, DD_MM_YYYY, YYYY-MM-DD и т.п.
+        tokens = re.findall(r"\d{2}[._-]\d{2}[._-]\d{4}|\d{4}[._-]\d{2}[._-]\d{2}", filename)
+        parsed = [d for t in tokens if (d := _parse_date_from_str(t)) is not None]
+        if len(parsed) >= 2:
+            parsed.sort()
+            return f"{parsed[0].strftime('%d.%m.%Y')} — {parsed[-1].strftime('%d.%m.%Y')}"
+        if len(parsed) == 1:
+            return parsed[0].strftime("%d.%m.%Y")
+
+    # Фолбэк: min/max из колонки дат в данных
     for col in ["Дата начисления", "Дата транзакции", "Дата"]:
         if col in df.columns:
             dates = pd.to_datetime(df[col], dayfirst=True, errors="coerce").dropna()
@@ -102,7 +125,7 @@ def detect_period(df: pd.DataFrame) -> str:
 def save_report_to_history(kind: str, filename: str, df_raw: pd.DataFrame, regular: pd.DataFrame) -> str:
     """Сохраняет сырой DataFrame в parquet и добавляет запись в историю."""
     HISTORY_DIR.mkdir(exist_ok=True)
-    period  = detect_period(df_raw)
+    period  = detect_period(df_raw, filename)
     rec_id  = str(uuid.uuid4())[:8]
     parquet = HISTORY_DIR / f"{kind}_{rec_id}.parquet"
 
@@ -680,7 +703,7 @@ def render_history_sidebar(kind: str) -> dict | None:
 
 def _load_ozon_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False):
     regular, returns = build_accrual_summary(df_raw)
-    period = detect_period(df_raw)
+    period = detect_period(df_raw, filename)
     st.session_state.ozon_df_raw = df_raw
     st.session_state.ozon_regular = regular
     st.session_state.ozon_returns = returns
@@ -809,7 +832,7 @@ def page_ozon():
 
 def _load_ym_report(df_raw: pd.DataFrame, filename: str, from_history: bool = False):
     df     = build_ym_summary(df_raw)
-    period = detect_period(df_raw)
+    period = detect_period(df_raw, filename)
     st.session_state.ym_df_raw = df_raw
     st.session_state.ym_df     = df
     st.session_state.ym_period  = period
