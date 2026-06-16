@@ -1818,7 +1818,24 @@ def _costs_panel(kind: str):
                 mask = (df_costs["Артикул / SKU"].str.contains(search_c, case=False, na=False) |
                         df_costs["Название товара"].str.contains(search_c, case=False, na=False))
                 df_costs = df_costs[mask]
-            st.dataframe(df_costs, use_container_width=True, hide_index=True, height=560)
+            sel_event = st.dataframe(
+                df_costs, use_container_width=True, hide_index=True, height=500,
+                on_select="rerun", selection_mode="multi-row", key=f"costs_table_{k}",
+            )
+            sel_rows = sel_event.selection.rows if sel_event.selection else []
+            if sel_rows:
+                sel_skus = [df_costs.iloc[i]["Артикул / SKU"] for i in sel_rows]
+                st.caption(f"Выбрано: {len(sel_skus)} — {', '.join(sel_skus[:5])}{'…' if len(sel_skus) > 5 else ''}")
+                if st.button(f"🗑 Удалить выбранные ({len(sel_skus)})", type="primary",
+                             use_container_width=True, key=f"costs_del_sel_{k}"):
+                    cur = dict(get_costs(k))
+                    cur_n = dict(get_cost_names(k))
+                    for sku_v in sel_skus:
+                        cur.pop(sku_v, None)
+                        cur_n.pop(sku_v, None)
+                    set_costs(cur, k)
+                    set_cost_names(cur_n, k)
+                    st.rerun()
         else:
             st.info("База пуста — скачайте шаблон, заполните и загрузите.")
 
