@@ -9,12 +9,13 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_cookies_controller import CookieController
 
 # ── Пути к файлам ─────────────────────────────────────────────────────────
 BASE_DIR        = Path(__file__).parent
@@ -29,6 +30,9 @@ STATE_FILE      = BASE_DIR / "ozon_state.json"
 HISTORY_FILE    = BASE_DIR / "history.json"
 HISTORY_DIR     = BASE_DIR / "history"
 USERS_FILE      = BASE_DIR / "users.json"
+SESSIONS_FILE   = BASE_DIR / "sessions.json"
+
+SESSION_TTL_MINUTES = 30
 
 ADMIN_LOGIN    = "admin"
 ADMIN_PASSWORD = "Allroad016"
@@ -312,6 +316,46 @@ def _save_history():
 
 def _hash_pw(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
+
+# ── Server-side sessions ───────────────────────────────────────────────────
+
+def _get_sessions() -> dict:
+    return _read_json(SESSIONS_FILE, {})
+
+def _save_sessions(sessions: dict):
+    _write_json(SESSIONS_FILE, sessions)
+
+def _create_session(username: str, role: str) -> str:
+    token = str(uuid.uuid4())
+    sessions = _get_sessions()
+    sessions[token] = {
+        "username": username,
+        "role": role,
+        "expires": (datetime.now() + timedelta(minutes=SESSION_TTL_MINUTES)).isoformat(),
+    }
+    _save_sessions(sessions)
+    return token
+
+def _validate_session(token: str) -> dict | None:
+    if not token:
+        return None
+    sessions = _get_sessions()
+    s = sessions.get(token)
+    if not s:
+        return None
+    if datetime.now() > datetime.fromisoformat(s["expires"]):
+        sessions.pop(token, None)
+        _save_sessions(sessions)
+        return None
+    # Продлеваем сессию при каждом обращении
+    sessions[token]["expires"] = (datetime.now() + timedelta(minutes=SESSION_TTL_MINUTES)).isoformat()
+    _save_sessions(sessions)
+    return s
+
+def _delete_session(token: str):
+    sessions = _get_sessions()
+    sessions.pop(token, None)
+    _save_sessions(sessions)
 
 def get_users() -> dict:
     return _shared()["users"]
@@ -1927,7 +1971,7 @@ def page_costs():
 
 
 def page_calculator():
-    st.header("🛒 Калькулятор цен ОЗОН · Дальний кластер")
+    st.header("🛒 Калькулятор цен ОЗОН")
 
     if "calc_initialized" not in st.session_state:
         roi, df = load_price_state()
@@ -1950,29 +1994,45 @@ def page_calculator():
 
     with col_upload:
         up = st.file_uploader("📂 Загрузить себестоимость (Excel)", type=["xlsx"],
-                              help="Колонки: Наименование, Себестоимость")
+                              help="Колонки: Наименование, Себестоимость",
+                              key="calc_cost_upload")
         if up:
             try:
-                cost_df = pd.read_excel(up, skiprows=1)
+                cost_df = pd.read_excel(up)
                 cost_df.columns = [str(c).strip() for c in cost_df.columns]
                 ncol = next((c for c in cost_df.columns if "наим" in c.lower()), None)
                 ccol = next((c for c in cost_df.columns if "себес" in c.lower()), None)
                 if ncol and ccol:
                     cm = {str(r[ncol]).strip().lower(): float(r[ccol])
                           for _, r in cost_df.iterrows() if pd.notna(r.get(ccol))}
-                    df = st.session_state.calc_df.copy()
-                    matched = 0
-                    for idx, row in df.iterrows():
-                        key = str(row["name"]).strip().lower()
-                        if key in cm:
-                            df.at[idx, "cost"] = cm[key]
-                            matched += 1
-                    st.session_state.calc_df = recalculate_prices(df, st.session_state.calc_roi)
-                    save_price_state(st.session_state.calc_df, st.session_state.calc_roi)
-                    st.success(f"✓ Обновлено: {matched} товаров")
-                    st.rerun()
+                    st.session_state["_calc_pending_costs"] = cm
+                    matched_count = sum(
+                        1 for _, row in st.session_state.calc_df.iterrows()
+                        if str(row["name"]).strip().lower() in cm
+                    )
+                    st.caption(f"Найдено совпадений: {matched_count} товаров")
+                else:
+                    st.warning("Не найдены колонки «Наименование» / «Себестоимость»")
             except Exception as e:
-                st.error(f"Ошибка: {e}")
+                st.error(f"Ошибка чтения: {e}")
+        else:
+            st.session_state.pop("_calc_pending_costs", None)
+
+        if st.session_state.get("_calc_pending_costs"):
+            if st.button("✅ Применить себестоимость", type="primary", key="apply_costs_btn"):
+                cm = st.session_state["_calc_pending_costs"]
+                df = st.session_state.calc_df.copy()
+                matched = 0
+                for idx, row in df.iterrows():
+                    key = str(row["name"]).strip().lower()
+                    if key in cm:
+                        df.at[idx, "cost"] = cm[key]
+                        matched += 1
+                st.session_state.calc_df = recalculate_prices(df, st.session_state.calc_roi)
+                save_price_state(st.session_state.calc_df, st.session_state.calc_roi)
+                st.session_state.pop("_calc_pending_costs", None)
+                st.success(f"✓ Обновлено {matched} товаров")
+                st.rerun()
 
     edited = st.data_editor(
         st.session_state.calc_df,
@@ -2036,7 +2096,16 @@ def page_calculator():
 # АВТОРИЗАЦИЯ
 # ══════════════════════════════════════════════════════════════════════════
 
-def page_auth():
+def _apply_session(username: str, role: str, cookies: CookieController):
+    token = _create_session(username, role)
+    cookies.set("session_token", token)
+    st.session_state["logged_in"] = True
+    st.session_state["username"] = username
+    st.session_state["role"] = role
+    st.session_state["_session_token"] = token
+    st.rerun()
+
+def page_auth(cookies: CookieController):
     t = get_theme()
     st.markdown(
         f"<h2 style='text-align:center;color:{t['text']};margin-bottom:8px'>📊 Аналитика маркетплейсов</h2>",
@@ -2053,10 +2122,7 @@ def page_auth():
             users = get_users()
             # admin может войти всегда
             if login == ADMIN_LOGIN and password == ADMIN_PASSWORD:
-                st.session_state["logged_in"] = True
-                st.session_state["username"] = ADMIN_LOGIN
-                st.session_state["role"] = "admin"
-                st.rerun()
+                _apply_session(ADMIN_LOGIN, "admin", cookies)
             elif login in users:
                 u = users[login]
                 if u["password"] != _hash_pw(password):
@@ -2064,10 +2130,7 @@ def page_auth():
                 elif u.get("status") != "approved":
                     st.warning("Ваш аккаунт ещё не одобрен администратором.")
                 else:
-                    st.session_state["logged_in"] = True
-                    st.session_state["username"] = login
-                    st.session_state["role"] = u.get("role", "user")
-                    st.rerun()
+                    _apply_session(login, u.get("role", "user"), cookies)
             else:
                 st.error("Пользователь не найден.")
 
@@ -2179,9 +2242,21 @@ _start_git_autosave()
 # Переводим старые числовые периоды в истории в формат с месяцем словом
 migrate_history_periods()
 
+# ── Cookie controller — инициализируем до первого st.stop() ───────────────
+_cookies = CookieController()
+
 # ── Проверка авторизации ──────────────────────────────────────────────────
 if not st.session_state.get("logged_in"):
-    page_auth()
+    _token = _cookies.get("session_token")
+    if _token:
+        _sess = _validate_session(_token)
+        if _sess:
+            st.session_state["logged_in"] = True
+            st.session_state["username"]  = _sess["username"]
+            st.session_state["role"]      = _sess["role"]
+            st.session_state["_session_token"] = _token
+            st.rerun()
+    page_auth(_cookies)
     st.stop()
 
 # ── Сайдбар ───────────────────────────────────────────────────────────────
@@ -2190,6 +2265,10 @@ st.sidebar.title("📊 Аналитика")
 _uname = st.session_state.get("username", "")
 st.sidebar.caption(f"👤 {_uname}")
 if st.sidebar.button("Выйти", key="logout_btn"):
+    _tok = st.session_state.pop("_session_token", None)
+    if _tok:
+        _delete_session(_tok)
+        _cookies.remove("session_token")
     for _k in ["logged_in", "username", "role"]:
         st.session_state.pop(_k, None)
     st.rerun()
