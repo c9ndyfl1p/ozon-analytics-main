@@ -1,6 +1,19 @@
 {
   "ozon": [
     {
+      "id": "da5fe953",
+      "filename": "Отчет по начислениям_01.06.2026-22.06.2026.xlsx",
+      "period": "1 июня 2026 — 22 июня 2026",
+      "uploaded_at": "22.06.2026 05:18",
+      "metrics": {
+        "revenue": 828824.0,
+        "profit": 245683.0,
+        "orders": 253,
+        "margin": 66.5
+      },
+      "parquet": "/mount/src/ozon-analytics-main/history/ozon_da5fe953.parquet"
+    },
+    {
       "id": "4297eb58",
       "filename": "Отчет по начислениям_01.05.2026-31.05.2026 (4).xlsx",
       "period": "1 мая 2026 — 31 мая 2026",
