@@ -40,6 +40,10 @@ ADMIN_PASSWORD = "Allroad016"
 TELEGRAM_TOKEN   = "8683988833:AAEoq2pVkEZinD3QcsjRj1dRx9IT8x06nug"
 TELEGRAM_CHAT_ID = "730245954"
 
+# ── Локальный ИИ (llama.cpp, OpenAI-совместимый эндпоинт) ──────────────────
+LLM_DEFAULT_BASE_URL = "http://192.168.3.9:8000/v1"
+LLM_DEFAULT_MODEL    = "Qwen3.6-27B-NVFP4-Q4_K_M.gguf"
+
 # ── Константы ─────────────────────────────────────────────────────────────
 TARIFF_PER_L  = 1.9
 ACQUIRING_PCT = 1.5
@@ -2093,6 +2097,122 @@ def page_calculator():
         )
 
 # ══════════════════════════════════════════════════════════════════════════
+# ИИ-ПОМОЩНИК (локальная модель через llama.cpp, OpenAI-совместимый API)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _llm_client(base_url: str):
+    from openai import OpenAI
+    return OpenAI(base_url=base_url, api_key="not-needed")
+
+def _df_context_summary(df: pd.DataFrame, label: str, period: str, max_rows: int = 40) -> str:
+    """Компактная сводка по отчёту для системного промпта — без сырых тысяч строк."""
+    if df is None or df.empty:
+        return f"Отчёт «{label}»: данных нет."
+    lines = [f"Отчёт «{label}», период: {period or 'не указан'}."]
+    rev    = df["Выручка"].sum()         if "Выручка"        in df.columns else None
+    profit = df["Прибыль"].sum()         if "Прибыль"        in df.columns else None
+    qty    = int(df["Количество"].sum()) if "Количество"     in df.columns else None
+    margin = df["Рентабельность"].mean() if "Рентабельность" in df.columns else None
+    totals = []
+    if rev    is not None: totals.append(f"выручка {rev:,.0f} ₽")
+    if profit is not None: totals.append(f"прибыль {profit:,.0f} ₽")
+    if margin is not None: totals.append(f"средняя рентабельность {margin:.1f}%")
+    if qty    is not None: totals.append(f"заказов {qty}")
+    if totals:
+        lines.append("Итого: " + ", ".join(totals) + ".")
+
+    if {"SKU", "Название товара"}.issubset(df.columns):
+        agg = {}
+        if "Количество"     in df.columns: agg["qty"]     = ("Количество", "sum")
+        if "Выручка"        in df.columns: agg["revenue"] = ("Выручка", "sum")
+        if "Прибыль"        in df.columns: agg["profit"]  = ("Прибыль", "sum")
+        if "Рентабельность" in df.columns: agg["margin"]  = ("Рентабельность", "mean")
+        if agg:
+            grp = df.groupby(["SKU", "Название товара"], sort=False).agg(**agg).reset_index()
+            sort_col = "profit" if "profit" in grp.columns else grp.columns[-1]
+            grp = grp.sort_values(sort_col, ascending=False).head(max_rows)
+            lines.append("\nПо товарам (топ по прибыли, CSV):")
+            lines.append(grp.to_csv(index=False))
+    return "\n".join(lines)
+
+def _ai_get_context(ctx_choice: str) -> str:
+    if ctx_choice == "Текущий отчёт OZON":
+        df = st.session_state.get("ozon_regular")
+        return _df_context_summary(df, "OZON", st.session_state.get("ozon_period", ""))
+    if ctx_choice == "Текущий отчёт Яндекс Маркет":
+        df = st.session_state.get("ym_df")
+        return _df_context_summary(df, "Яндекс Маркет", st.session_state.get("ym_period", ""))
+    if ctx_choice == "Калькулятор цен":
+        df = st.session_state.get("calc_df")
+        if df is None or df.empty:
+            return "Калькулятор цен: данных нет."
+        return "Таблица калькулятора цен (CSV):\n" + df.to_csv(index=False)
+    return ""
+
+def page_ai_assistant():
+    st.header("🤖 ИИ-помощник")
+
+    with st.expander("⚙️ Настройки подключения"):
+        base_url = st.text_input("Адрес API (OpenAI-совместимый)",
+                                  value=st.session_state.get("ai_base_url", LLM_DEFAULT_BASE_URL),
+                                  key="ai_base_url")
+        model = st.text_input("Имя модели",
+                               value=st.session_state.get("ai_model", LLM_DEFAULT_MODEL),
+                               key="ai_model")
+
+    ctx_choice = st.selectbox(
+        "Контекст данных",
+        ["Без контекста", "Текущий отчёт OZON", "Текущий отчёт Яндекс Маркет", "Калькулятор цен"],
+        key="ai_ctx_choice",
+    )
+
+    if "ai_chat_history" not in st.session_state:
+        st.session_state.ai_chat_history = []
+
+    for msg in st.session_state.ai_chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    prompt = st.chat_input("Спросите про отчёт…")
+    if prompt:
+        st.session_state.ai_chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        system_prompt = (
+            "Ты — аналитик маркетплейсов, помогаешь анализировать отчёты OZON и Яндекс Маркет. "
+            "Отвечай кратко и по-русски, основывайся только на данных ниже, не выдумывай цифры."
+        )
+        context_text = _ai_get_context(ctx_choice)
+        if context_text:
+            system_prompt += f"\n\n{context_text}"
+
+        messages = [{"role": "system", "content": system_prompt}] + st.session_state.ai_chat_history
+
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            full = ""
+            try:
+                client = _llm_client(base_url)
+                stream = client.chat.completions.create(
+                    model=model, messages=messages, stream=True, temperature=0.3,
+                )
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content or ""
+                    if delta:
+                        full += delta
+                        placeholder.markdown(full)
+            except Exception as e:
+                full = f"⚠️ Не удалось подключиться к ИИ: {e}"
+                placeholder.markdown(full)
+        st.session_state.ai_chat_history.append({"role": "assistant", "content": full})
+
+    if st.session_state.ai_chat_history and st.button("🗑️ Очистить чат", key="ai_clear_chat"):
+        st.session_state.ai_chat_history = []
+        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # АВТОРИЗАЦИЯ
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -2275,7 +2395,7 @@ if st.sidebar.button("Выйти", key="logout_btn"):
 
 page = st.sidebar.radio(
     "Раздел",
-    ["📊 OZON Аналитика", "🎯 Яндекс Маркет", "💰 Себестоимость", "🛒 Калькулятор цен"],
+    ["📊 OZON Аналитика", "🎯 Яндекс Маркет", "💰 Себестоимость", "🛒 Калькулятор цен", "🤖 ИИ-помощник"],
     label_visibility="collapsed",
 )
 
@@ -2338,3 +2458,5 @@ elif page == "💰 Себестоимость":
     page_costs()
 elif page == "🛒 Калькулятор цен":
     page_calculator()
+elif page == "🤖 ИИ-помощник":
+    page_ai_assistant()
