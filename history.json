@@ -1,17 +1,17 @@
 {
   "ozon": [
     {
-      "id": "da5fe953",
-      "filename": "Отчет по начислениям_01.06.2026-22.06.2026.xlsx",
-      "period": "1 июня 2026 — 22 июня 2026",
-      "uploaded_at": "22.06.2026 05:18",
+      "id": "91aa771b",
+      "filename": "Отчет по начислениям_01.06.2026-30.06.2026.xlsx",
+      "period": "1 июня 2026 — 30 июня 2026",
+      "uploaded_at": "01.07.2026 05:32",
       "metrics": {
-        "revenue": 828824.0,
-        "profit": 245683.0,
-        "orders": 253,
-        "margin": 66.5
+        "revenue": 1306024.0,
+        "profit": 358083.0,
+        "orders": 451,
+        "margin": 61.1
       },
-      "parquet": "/mount/src/ozon-analytics-main/history/ozon_da5fe953.parquet"
+      "parquet": "/mount/src/ozon-analytics-main/history/ozon_91aa771b.parquet"
     },
     {
       "id": "4297eb58",
@@ -25,19 +25,6 @@
         "margin": 89.4
       },
       "parquet": "/mount/src/ozon-analytics-main/history/ozon_4297eb58.parquet"
-    },
-    {
-      "id": "2274cce8",
-      "filename": "Отчет по начислениям_01.06.2026-16.06.2026.xlsx",
-      "period": "1 июня 2026 — 16 июня 2026",
-      "uploaded_at": "16.06.2026 13:06",
-      "metrics": {
-        "revenue": 612279.0,
-        "profit": 179501.0,
-        "orders": 192,
-        "margin": 68.8
-      },
-      "parquet": "/mount/src/ozon-analytics-main/history/ozon_2274cce8.parquet"
     },
     {
       "id": "8f4b4c92",
